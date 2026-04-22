@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dynaverse</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #111827; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useEffect, useRef, useState } = React;
+
+    /* ─────────────────────────── CONSTANTS ─────────────────────────── */
+
+    const BLOCK_SIZE   = { x: 1.0, y: 0.5, z: 0.6 };
+    const BLOCK_SCALE  = 4;
+    const TEXTURE_URLS = [
+      "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/roblox-stud%20(1).png",
+      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(20).png",
+      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(5).png",
+    ];
+
+    /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
+
+    function createEngine(renderer, container, blocks, setCoords) {
+      let animId = 0;
+      const keys = {};
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x000000, 0.000000000000002);
+
+      const bgLoader = new THREE.TextureLoader();
+      bgLoader.load(
+        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/u_mey4kjj5ww-galaxy-1998_512.gif",
+        (tex) => { scene.background = tex; }
+      );
+
+      const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 70000000);
+
+      scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+      const dir = new THREE.DirectionalLight(0xffffff, 2);
+      dir.position.set(5, 10, 5);
+      scene.add(dir);
+
+      const loader = new THREE.TextureLoader();
+
+      const groundTex = loader.load(TEXTURE_URLS[0]);
+      groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
+      groundTex.repeat.set(100, 100);
+      groundTex.magFilter = THREE.NearestFilter;
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(100, 100),
+        new THREE.MeshStandardMaterial({ map: groundTex })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = -1.1;
+      scene.add(ground);
+
+      const skyTex = loader.load("https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/ylanite-clouds-5514993_1920.jpg");
+      skyTex.wrapS = skyTex.wrapT = THREE.RepeatWrapping;
+      skyTex.repeat.set(5, 5);
+      const sky = new THREE.Mesh(
+        new THREE.BoxGeometry(500000000, 2000000, 500000000),
+        new THREE.MeshStandardMaterial({ map: skyTex, roughness: 1, side: THREE.DoubleSide })
+      );
+      scene.add(sky);
+
+      const player = new THREE.Group();
+      player.position.y = 0.5;
+      scene.add(player);
+
+      const geom = new THREE.BoxGeometry();
+
+      const head = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0xff00e6 }));
+      head.scale.set(1.5, 1, 1);
+      player.add(head);
+
+      const faceTex = loader.load("https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/output-onlinepngtools%20(19).png");
+      faceTex.magFilter = THREE.NearestFilter;
+      faceTex.minFilter = THREE.NearestFilter;
+      const faceMesh = new THREE.Mesh(geom, [
+        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+        new THREE.MeshStandardMaterial({ map: faceTex, transparent: true, alphaTest: 0.5 }),
+        new THREE.MeshStandardMaterial({ color: 0xffffff }),
+      ]);
+      faceMesh.position.set(0, 0, 0.01);
+      faceMesh.scale.set(1.5, 1, 0.99);
+      player.add(faceMesh);
+
+      const body = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x990099 }));
+      body.position.set(0, -0.8, 0);
+      body.scale.set(0.6, 0.6, 0.5);
+      player.add(body);
+
+      const limbMat = new THREE.MeshStandardMaterial({ color: 0xff00e6 });
+
+      function makeLimb(px, py) {
+        const pivot = new THREE.Group();
+        pivot.position.set(px, py, 0);
+        const mesh = new THREE.Mesh(geom, limbMat);
+        mesh.scale.set(0.2, 0.6, 0.3);
+        mesh.position.y = -0.3;
+        pivot.add(mesh);
+        player.add(pivot);
+        return pivot;
+      }
+
+      const leftArmPivot  = makeLimb(-0.41, -0.5);
+      const rightArmPivot = makeLimb( 0.41, -0.5);
+      const leftLegPivot  = makeLimb(-0.17, -1.0);
+      const rightLegPivot = makeLimb( 0.17, -1.0);
+
+      const blockTextures = TEXTURE_URLS.map((url) => {
+        const t = loader.load(url);
+        t.magFilter = THREE.NearestFilter;
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.repeat.set(4, 2);
+        return t;
+      });
+
+      const obstacles = [];
+      const obstacleBoxes = [];
+
+      for (const b of blocks) {
+        const mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(BLOCK_SIZE.x * BLOCK_SCALE, BLOCK_SIZE.y * BLOCK_SCALE, BLOCK_SIZE.z * BLOCK_SCALE),
+          new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] })
+        );
+        mesh.position.set(b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE);
+        scene.add(mesh);
+        obstacles.push(mesh);
+        obstacleBoxes.push(new THREE.Box3().setFromObject(mesh));
+      }
+
+      let velocity_y = 0, isJumping = false;
+      const gravity = -0.05, jumpStrength = 0.8, speed = 0.15, rotationSpeed = 0.05;
+      let cameraAngle = 0, walkTime = 0;
+      const cameraDistance = 8, cameraHeight = 4;
+      const playerBox = new THREE.Box3();
+
+      function updatePlayerHitbox() {
+        playerBox.setFromCenterAndSize(player.position.clone(), new THREE.Vector3(1, 3.15, 1));
+      }
+     
+
+      const jumpSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/roblox-classic-jump.mp3");
+      const walkSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/walk.mp3");
+      walkSound.loop   = true;
+      const deathSound = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/audiomass-output%20(11).mp3");
+      let walkSoundPlaying = false;
+
+      function updateMovement() {
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        forward.y = 0;
+        forward.normalize();
+
+        const right = new THREE.Vector3();
+        right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+        let moved = false;
+        const oldPos = player.position.clone();
+
+        if (keys["w"]) { player.position.add(forward.clone().multiplyScalar(speed));  moved = true; }
+        if (keys["s"]) { player.position.add(forward.clone().multiplyScalar(-speed)); moved = true; }
+        if (keys["a"]) { player.position.add(right.clone().multiplyScalar(-speed));   moved = true; }
+        if (keys["d"]) { player.position.add(right.clone().multiplyScalar(speed));    moved = true; }
+
+        updatePlayerHitbox();
+        obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
+        if (obstacleBoxes.some((b) => playerBox.intersectsBox(b))) {
+          player.position.copy(oldPos);
+        }
+
+        if (keys[" "] && !isJumping) {
+          velocity_y = jumpStrength;
+          isJumping  = true;
+          jumpSound.currentTime = 0;
+          jumpSound.play().catch(() => {});
+        }
+
+        player.position.y += velocity_y;
+        velocity_y += gravity;
+
+        updatePlayerHitbox();
+        obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
+        for (let i = 0; i < obstacles.length; i++) {
+          if (playerBox.intersectsBox(obstacleBoxes[i]) && velocity_y <= 0) {
+            player.position.y = obstacles[i].position.y + (BLOCK_SIZE.y * BLOCK_SCALE) +0.6;
+            isJumping  = false;
+            velocity_y = 0;
+          }
+        }
+
+        if (Math.abs(player.position.x) < 50 && Math.abs(player.position.z) < 50 && player.position.y < 0.5) {
+          player.position.y = 0.5;
+          isJumping  = false;
+          velocity_y = 0;
+        }
+
+        if (player.position.y < -500) {
+          deathSound.currentTime = 0;
+          deathSound.play().catch(() => {});
+          player.position.set(0, 5, 0);
+          velocity_y = 0;
+          isJumping  = false;
+        }
+
+        if (moved) {
+          const vel = new THREE.Vector3();
+          if (keys["w"]) vel.add(forward);
+          if (keys["s"]) vel.add(forward.clone().negate());
+          if (keys["a"]) vel.add(right.clone().negate());
+          if (keys["d"]) vel.add(right);
+          if (vel.lengthSq() > 0) {
+            vel.normalize();
+            player.rotation.y = Math.atan2(vel.x, vel.z);
+          }
+        }
+
+        if (keys["e"]) cameraAngle -= rotationSpeed;
+        if (keys["q"]) cameraAngle += rotationSpeed;
+
+        camera.position.set(
+          player.position.x + cameraDistance * Math.sin(cameraAngle),
+          player.position.y + cameraHeight,
+          player.position.z + cameraDistance * Math.cos(cameraAngle)
+        );
+        camera.lookAt(player.position);
+
+        if (moved && !walkSoundPlaying) {
+          walkSound.play().catch(() => {});
+          walkSoundPlaying = true;
+        } else if (!moved && walkSoundPlaying) {
+          walkSound.pause();
+          walkSound.currentTime = 0;
+          walkSoundPlaying = false;
+        }
+
+        if (moved) {
+          walkTime += 0.15;
+          const swing = Math.sin(walkTime) * 0.8;
+          leftLegPivot.rotation.x  =  swing;
+          rightLegPivot.rotation.x = -swing;
+          leftArmPivot.rotation.x  = -swing;
+          rightArmPivot.rotation.x =  swing;
+        } else {
+          leftLegPivot.rotation.x  = 0;
+          rightLegPivot.rotation.x = 0;
+          leftArmPivot.rotation.x  = 0;
+          rightArmPivot.rotation.x = 0;
+        }
+      }
+
+      const onKeyDown = (e) => { keys[e.key.toLowerCase()] = true; };
+      const onKeyUp   = (e) => { keys[e.key.toLowerCase()] = false; };
+      window.addEventListener("keydown", onKeyDown);
+      window.addEventListener("keyup",   onKeyUp);
+
+      function animate() {
+        animId = requestAnimationFrame(animate);
+        updateMovement();
+        setCoords({ x: player.position.x, y: player.position.y, z: player.position.z });
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      return {
+        camera,
+        destroy() {
+          cancelAnimationFrame(animId);
+          window.removeEventListener("keydown", onKeyDown);
+          window.removeEventListener("keyup",   onKeyUp);
+          walkSound.pause();
+        },
+      };
+    }
+
+    /* ─────────────────────────── TEST MODE COMPONENT ─────────────────────────── */
+
+    function TestMode({ blocks, onExit }) {
+      const mountRef   = useRef(null);
+      const engineRef  = useRef(null);
+      const [coords, setCoords]       = useState({ x: 0, y: 0, z: 0 });
+      const [chatMessages, setChatMessages] = useState([]);
+      const [chatInput,  setChatInput]      = useState("");
+
+      useEffect(() => {
+        const mount = mountRef.current;
+        if (!mount) return;
+
+        let renderer;
+        try {
+          renderer = new THREE.WebGLRenderer({ antialias: true });
+        } catch {
+          return;
+        }
+
+        renderer.setSize(mount.clientWidth, mount.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        mount.appendChild(renderer.domElement);
+
+        const engine = createEngine(renderer, mount, blocks, setCoords);
+        engineRef.current = engine;
+
+        const onResize = () => {
+          engine.camera.aspect = mount.clientWidth / mount.clientHeight;
+          engine.camera.updateProjectionMatrix();
+          renderer.setSize(mount.clientWidth, mount.clientHeight);
+        };
+        window.addEventListener("resize", onResize);
+
+        return () => {
+          engine.destroy();
+          renderer.dispose();
+          if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+          window.removeEventListener("resize", onResize);
+        };
+      }, []);
+
+      function handleChat(e) {
+        e.preventDefault();
+        if (!chatInput.trim()) return;
+        setChatMessages((prev) => [...prev.slice(-49), { user: "you", msg: chatInput.trim() }]);
+        setChatInput("");
+      }
+
+      return (
+        <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative" }}>
+          <div
+            ref={mountRef}
+            style={{
+              width: "100%", height: "100%",
+              background: "url('https://raw.githubusercontent.com/Maideo-Studio/textures/f62722361238fc9d7e629114c85ebc089e061398/placidplace-space-14958%20(1).gif') center/400%",
+            }}
+          />
+
+          <div style={{
+            position: "absolute", top: 10, left: 10,
+            color: "white", fontSize: 14,
+            background: "rgba(0,0,0,0.5)", padding: "6px 10px",
+            borderRadius: 6, zIndex: 3000, fontFamily: "monospace",
+          }}>
+            X: {coords.x.toFixed(2)} &nbsp; Y: {coords.y.toFixed(2)} &nbsp; Z: {coords.z.toFixed(2)}
+          </div>
+
+          <div style={{
+            position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
+            color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "sans-serif",
+            background: "rgba(0,0,0,0.4)", padding: "5px 12px", borderRadius: 6, zIndex: 3000,
+            whiteSpace: "nowrap",
+          }}>
+            WASD: move &nbsp;|&nbsp; Space: jump &nbsp;|&nbsp; Q/E: rotate camera
+          </div>
+
+          <button
+            onClick={onExit}
+            style={{
+              position: "absolute", top: 10, right: 10, zIndex: 3000,
+              padding: "10px 18px", background: "#ef4444", color: "white",
+              border: "none", borderRadius: 6, cursor: "pointer",
+              fontWeight: "bold", fontFamily: "sans-serif", fontSize: 14,
+            }}
+          >
+            ✕ Stop Test
+          </button>
+
+          <div style={{
+            position: "absolute", bottom: 16, left: 16, width: 320,
+            zIndex: 2000, display: "flex", flexDirection: "column", gap: 8,
+          }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto", padding: 8 }}>
+              {chatMessages.map((m, i) => (
+                <div key={i} style={{ color: "#fff", fontSize: 13, textShadow: "1px 1px 2px #000" }}>
+                  <span style={{ color: "#f9a8d4", fontWeight: "bold" }}>{m.user}:</span> {m.msg}
+                </div>
+              ))}
+            </div>
+            <form onSubmit={handleChat} style={{ display: "flex", gap: 6 }}>
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Press Enter to chat…"
+                maxLength={100}
+                style={{
+                  flex: 1, padding: "6px 10px", borderRadius: 6,
+                  border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)",
+                  color: "#fff", fontSize: 13, outline: "none",
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
+              />
+              <button type="submit" style={{
+                padding: "6px 14px", borderRadius: 6, border: "none",
+                background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer",
+              }}>Send</button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─────────────────────────── BUILDER COMPONENT ─────────────────────────── */
+
+    function Game() {
+      const mountRef       = useRef(null);
+      const activeSlotRef  = useRef(0);
+      const [activeSlot, setActiveSlot] = useState(0);
+      const [testBlocks,  setTestBlocks] = useState(null);
+
+      const stateRef = useRef({
+        scene: null, camera: null, renderer: null,
+        raycaster: new THREE.Raycaster(),
+        mouse: new THREE.Vector2(),
+        ground: null, ghostBlock: null, selectedBlock: null,
+        objects: [], blocks: [], blockTextures: [],
+        isDraggingCamera: false, mouseDownTime: 0,
+        isMovingBlock: false,
+        startMousePos: { x: 0, y: 0 },
+        previousMousePosition: { x: 0, y: 0 },
+        yaw: 0.5, pitch: 0.8, radius: 15, animFrameId: 0,
+      });
+
+      useEffect(() => {
+        const mount = mountRef.current;
+        if (!mount) return;
+        const s = stateRef.current;
+
+        s.scene = new THREE.Scene();
+        s.scene.background = new THREE.Color(0xffffff);
+
+        s.camera = new THREE.PerspectiveCamera(45, mount.clientWidth / mount.clientHeight, 0.1, 1000);
+
+        try {
+          s.renderer = new THREE.WebGLRenderer({ antialias: true });
+        } catch {
+          const msg = document.createElement("div");
+          msg.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-size:18px;background:#111827;text-align:center;padding:20px;";
+          msg.textContent = "WebGL is not available in this environment. Please open the app in a modern browser to play Dynaverse.";
+          mount.appendChild(msg);
+          return;
+        }
+
+        s.renderer.setSize(mount.clientWidth, mount.clientHeight);
+        s.renderer.setPixelRatio(window.devicePixelRatio);
+        mount.appendChild(s.renderer.domElement);
+
+        const loader = new THREE.TextureLoader();
+        TEXTURE_URLS.forEach((url, i) => {
+          const tex = loader.load(url);
+          tex.magFilter = THREE.NearestFilter;
+          tex.minFilter = THREE.NearestFilter;
+          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+          tex.repeat.set(4, 2);
+          s.blockTextures[i] = tex;
+        });
+
+        const groundTex = loader.load(TEXTURE_URLS[0]);
+        groundTex.magFilter = THREE.NearestFilter;
+        groundTex.minFilter = THREE.NearestFilter;
+        groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
+        groundTex.repeat.set(73, 70);
+
+        s.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        dirLight.position.set(10, 20, 10);
+        s.scene.add(dirLight);
+
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(20, 20),
+          new THREE.MeshStandardMaterial({ map: groundTex })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        s.scene.add(ground);
+        s.objects.push(ground);
+        s.ground = ground;
+
+        const ghost = new THREE.Mesh(
+          new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
+          new THREE.MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.4 })
+        );
+        s.scene.add(ghost);
+        s.ghostBlock = ghost;
+
+        updateCamera();
+
+        const canvas = s.renderer.domElement;
+        canvas.addEventListener("mousemove", onMouseMove);
+        canvas.addEventListener("mousedown", onMouseDown);
+        canvas.addEventListener("mouseup",   onMouseUp);
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+        window.addEventListener("resize", onResize);
+
+        function animate() {
+          s.animFrameId = requestAnimationFrame(animate);
+          checkHold();
+          s.renderer.render(s.scene, s.camera);
+        }
+        animate();
+
+        return () => {
+          cancelAnimationFrame(s.animFrameId);
+          canvas.removeEventListener("mousemove", onMouseMove);
+          canvas.removeEventListener("mousedown", onMouseDown);
+          canvas.removeEventListener("mouseup",   onMouseUp);
+          canvas.removeEventListener("contextmenu", (e) => e.preventDefault());
+          window.removeEventListener("resize", onResize);
+          s.renderer.dispose();
+          if (mount.contains(s.renderer.domElement)) mount.removeChild(s.renderer.domElement);
+        };
+
+        function updateCamera() {
+          const { yaw, pitch, radius, camera } = s;
+          if (!camera) return;
+          camera.position.set(
+            radius * Math.sin(yaw) * Math.cos(pitch),
+            radius * Math.sin(pitch),
+            radius * Math.cos(yaw) * Math.cos(pitch)
+          );
+          camera.lookAt(0, 0, 0);
+        }
+
+        function getSnappedPos(hit) {
+          const normal = hit.face.normal;
+          const pos = new THREE.Vector3()
+            .copy(hit.point)
+            .add(new THREE.Vector3(
+              normal.x * (BLOCK_SIZE.x / 2),
+              normal.y * (BLOCK_SIZE.y / 2),
+              normal.z * (BLOCK_SIZE.z / 2)
+            ));
+          return new THREE.Vector3(
+            Math.floor(pos.x / BLOCK_SIZE.x) * BLOCK_SIZE.x + BLOCK_SIZE.x / 2,
+            Math.max(BLOCK_SIZE.y / 2, Math.floor(pos.y / BLOCK_SIZE.y) * BLOCK_SIZE.y + BLOCK_SIZE.y / 2),
+            Math.floor(pos.z / BLOCK_SIZE.z) * BLOCK_SIZE.z + BLOCK_SIZE.z / 2
+          );
+        }
+
+        function createBlock(position, texIndex) {
+          const block = new THREE.Mesh(
+            new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
+            new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] })
+          );
+          block.position.copy(position);
+          block.userData.texIndex = texIndex;
+          s.scene.add(block);
+          s.objects.push(block);
+          s.blocks.push(block);
+        }
+
+        function onMouseMove(e) {
+          const rect = canvas.getBoundingClientRect();
+          s.mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+          s.mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+
+          s.raycaster.setFromCamera(s.mouse, s.camera);
+          const targets = s.isMovingBlock && s.selectedBlock
+            ? s.objects.filter((o) => o !== s.selectedBlock)
+            : s.objects;
+          const hits = s.raycaster.intersectObjects(targets);
+
+          if (hits.length > 0) {
+            const snapped = getSnappedPos(hits[0]);
+            if (s.isMovingBlock && s.selectedBlock) {
+              s.selectedBlock.position.copy(snapped);
+              s.ghostBlock.visible = false;
+            } else {
+              s.ghostBlock.visible = true;
+              s.ghostBlock.position.copy(snapped);
+            }
+          } else {
+            s.ghostBlock.visible = false;
+          }
+
+          if (s.isDraggingCamera) {
+            s.yaw   -= (e.clientX - s.previousMousePosition.x) * 0.005;
+            s.pitch += (e.clientY - s.previousMousePosition.y) * 0.005;
+            s.pitch  = Math.max(0.1, Math.min(Math.PI / 2.1, s.pitch));
+            updateCamera();
+          }
+          s.previousMousePosition = { x: e.clientX, y: e.clientY };
+        }
+
+        function onMouseDown(e) {
+          e.preventDefault();
+          s.mouseDownTime    = Date.now();
+          s.startMousePos    = { x: e.clientX, y: e.clientY };
+          s.previousMousePosition = { x: e.clientX, y: e.clientY };
+
+          if (e.button === 0) {
+            s.raycaster.setFromCamera(s.mouse, s.camera);
+            const hits = s.raycaster.intersectObjects(s.objects);
+            if (hits.length > 0 && hits[0].object !== s.ground) {
+              s.selectedBlock = hits[0].object;
+            } else {
+              s.isDraggingCamera = true;
+            }
+          }
+        }
+
+        function onMouseUp(e) {
+          if (e.button === 0) {
+            const moveDist    = Math.hypot(e.clientX - s.startMousePos.x, e.clientY - s.startMousePos.y);
+            const clickDuration = Date.now() - s.mouseDownTime;
+
+            if (moveDist < 5 && clickDuration < 250) {
+              if (s.isMovingBlock) {
+                s.isMovingBlock = false;
+                s.selectedBlock = null;
+              } else if (s.ghostBlock.visible) {
+                createBlock(s.ghostBlock.position.clone(), activeSlotRef.current);
+              }
+            }
+
+            s.isDraggingCamera = false;
+            s.isMovingBlock    = false;
+            s.selectedBlock    = null;
+          }
+
+          if (e.button === 2) {
+            s.raycaster.setFromCamera(s.mouse, s.camera);
+            const hits = s.raycaster.intersectObjects(s.objects);
+            if (hits.length > 0 && hits[0].object !== s.ground) {
+              const obj = hits[0].object;
+              s.scene.remove(obj);
+              s.objects = s.objects.filter((o) => o !== obj);
+              s.blocks  = s.blocks.filter((o) => o !== obj);
+            }
+          }
+        }
+
+        function checkHold() {
+          if (s.selectedBlock && !s.isMovingBlock && !s.isDraggingCamera) {
+            if (Date.now() - s.mouseDownTime > 200) s.isMovingBlock = true;
+          }
+        }
+
+        function onResize() {
+          if (!mount || !s.camera || !s.renderer) return;
+          s.camera.aspect = mount.clientWidth / mount.clientHeight;
+          s.camera.updateProjectionMatrix();
+          s.renderer.setSize(mount.clientWidth, mount.clientHeight);
+        }
+      }, []);
+
+      function handleSetTexture(i) {
+        activeSlotRef.current = i;
+        setActiveSlot(i);
+      }
+
+      function enterTest() {
+        const s = stateRef.current;
+        setTestBlocks(s.blocks.map((b) => ({
+          pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+          texIndex: b.userData.texIndex,
+        })));
+      }
+
+      function exitTest() { setTestBlocks(null); }
+
+      function saveWorld() {
+        const s    = stateRef.current;
+        const data = s.blocks.map((b) => ({
+          pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+          texIndex: b.userData.texIndex,
+        }));
+        const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+        const url  = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href     = url;
+        link.download = "world.json";
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function loadWorld(e) {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const s    = stateRef.current;
+          const data = JSON.parse(ev.target.result);
+          s.blocks.forEach((b) => {
+            s.scene.remove(b);
+            s.objects = s.objects.filter((o) => o !== b);
+          });
+          s.blocks = [];
+          data.forEach((item) => {
+            const block = new THREE.Mesh(
+              new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
+              new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] })
+            );
+            block.position.set(item.pos.x, item.pos.y, item.pos.z);
+            block.userData.texIndex = item.texIndex;
+            s.scene.add(block);
+            s.objects.push(block);
+            s.blocks.push(block);
+          });
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      }
+
+      const slotStyle = (i) => ({
+        width: 60, height: 60,
+        border: activeSlot === i ? "2px solid #60a5fa" : "2px solid #555",
+        boxShadow: activeSlot === i ? "0 0 10px #60a5fa" : "none",
+        background: "rgba(0,0,0,0.6)", color: "white",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        cursor: "pointer", userSelect: "none",
+        fontFamily: "sans-serif", fontWeight: "bold", fontSize: 20,
+        transition: "border-color 0.15s, box-shadow 0.15s",
+      });
+
+      return (
+        <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative", background: "#111827" }}>
+
+          {/* Builder — always mounted */}
+          <div style={{ display: testBlocks !== null ? "none" : "block", width: "100%", height: "100%" }}>
+            <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+
+            <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 10, zIndex: 20 }}>
+              <button onClick={enterTest} style={{
+                padding: "10px 18px", background: "#22c55e", color: "white",
+                border: "none", borderRadius: 5, cursor: "pointer",
+                fontWeight: "bold", fontFamily: "sans-serif", fontSize: 14,
+              }}>▶ Test</button>
+
+              <button onClick={saveWorld} style={{
+                padding: "10px 15px", background: "#3b82f6", color: "white",
+                border: "none", borderRadius: 5, cursor: "pointer",
+                fontWeight: "bold", fontFamily: "sans-serif",
+              }}>Save World</button>
+
+              <label style={{
+                padding: "10px 15px", background: "#3b82f6", color: "white",
+                borderRadius: 5, cursor: "pointer", fontWeight: "bold",
+                fontFamily: "sans-serif", userSelect: "none",
+              }}>
+                Load World
+                <input type="file" accept=".json" style={{ display: "none" }} onChange={loadWorld} />
+              </label>
+            </div>
+
+            <div style={{
+              position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
+              display: "flex", gap: 10, zIndex: 20,
+            }}>
+              {[0, 1, 2].map((i) => (
+                <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
+              ))}
+            </div>
+
+            <div style={{
+              position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)",
+              color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif",
+              textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap",
+            }}>
+              Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Drag on ground: rotate camera
+            </div>
+          </div>
+
+          {/* Test mode overlay */}
+          {testBlocks !== null && (
+            <div style={{ position: "absolute", inset: 0, zIndex: 100 }}>
+              <TestMode blocks={testBlocks} onExit={exitTest} />
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ─────────────────────────── MOUNT ─────────────────────────── */
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<Game />);
+  </script>
+</body>
+</html>
