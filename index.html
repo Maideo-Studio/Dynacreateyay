@@ -27,6 +27,8 @@
       "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/roblox-stud%20(1).png",
       "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(20).png",
       "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(5).png",
+      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/download%20%2838%29%20%281%29.png",
+      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(8)%20(1).png"
     ];
 
     /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
@@ -758,7 +760,7 @@
               position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
               display: "flex", gap: 10, zIndex: 20,
             }}>
-              {[0, 1, 2].map((i) => (
+              {[0, 1, 2, 3, 4].map((i) => (
                 <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
               ))}
             </div>
