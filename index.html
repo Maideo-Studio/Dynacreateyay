@@ -31,6 +31,14 @@
       "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(8)%20(1).png"
     ];
 
+    const SENSOR_KINDS  = ["kill", "teleport", "launch"];
+    const SENSOR_COLORS = {
+      kill:     { color: 0xef4444, emissive: 0xb91c1c },
+      teleport: { color: 0xa855f7, emissive: 0x7e22ce },
+      launch:   { color: 0xf97316, emissive: 0xc2410c },
+    };
+    const SENSOR_LABELS = { kill: "Kill", teleport: "Tele", launch: "Jump" };
+
     /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
 
     function createEngine(renderer, container, blocks, setCoords) {
@@ -138,7 +146,7 @@
 
       for (const b of blocks) {
         if (b.shape === "sphere") {
-          // Sensors: invisible kill-trigger zones in-game
+          // Sensors: invisible trigger zones in-game
           const radius = (BLOCK_SIZE.x * BLOCK_SCALE) / 2;
           sensors.push({
             center: new THREE.Vector3(
@@ -147,6 +155,7 @@
               b.pos.z * BLOCK_SCALE
             ),
             radius,
+            kind: b.sensorKind || "kill",
           });
           continue;
         }
@@ -159,6 +168,8 @@
         obstacles.push(mesh);
         obstacleBoxes.push(new THREE.Box3().setFromObject(mesh));
       }
+
+      const sensorCooldown = sensors.map(() => 0);
 
       let velocity_y = 0, isJumping = false;
       const gravity = -0.05, jumpStrength = 0.8, speed = 0.15, rotationSpeed = 0.05;
@@ -233,19 +244,47 @@
           isJumping  = false;
         }
 
-        // Sensor kill zones — touching a sensor sphere triggers death
+        // Sensors: invisible triggers (kill / teleport / launch)
         const playerRadius = 0.75;
-        for (const sensor of sensors) {
+        for (let i = 0; i < sensors.length; i++) {
+          const sensor = sensors[i];
+          if (sensorCooldown[i] > 0) { sensorCooldown[i] -= 1; continue; }
           const dx = player.position.x - sensor.center.x;
           const dy = player.position.y - sensor.center.y;
           const dz = player.position.z - sensor.center.z;
           const reach = sensor.radius + playerRadius;
-          if (dx * dx + dy * dy + dz * dz < reach * reach) {
+          if (dx * dx + dy * dy + dz * dz >= reach * reach) continue;
+
+          if (sensor.kind === "kill") {
             deathSound.currentTime = 0;
             deathSound.play().catch(() => {});
             player.position.set(0, 5, 0);
             velocity_y = 0;
             isJumping  = false;
+            break;
+          }
+          if (sensor.kind === "launch") {
+            velocity_y = jumpStrength * 3.2;
+            isJumping  = true;
+            jumpSound.currentTime = 0;
+            jumpSound.play().catch(() => {});
+            sensorCooldown[i] = 20;
+            break;
+          }
+          if (sensor.kind === "teleport") {
+            let dest = -1;
+            for (let k = 1; k < sensors.length; k++) {
+              const j = (i + k) % sensors.length;
+              if (sensors[j].kind === "teleport") { dest = j; break; }
+            }
+            if (dest !== -1) {
+              const d = sensors[dest];
+              player.position.set(d.center.x, d.center.y + 2, d.center.z);
+              velocity_y = 0;
+              isJumping  = false;
+              sensorCooldown[i]    = 30;
+              sensorCooldown[dest] = 30;
+            }
             break;
           }
         }
@@ -445,12 +484,14 @@
     /* ─────────────────────────── BUILDER COMPONENT ─────────────────────────── */
 
     function Game() {
-      const mountRef       = useRef(null);
-      const activeSlotRef  = useRef(0);
-      const modeRef        = useRef("build");
-      const [activeSlot, setActiveSlot] = useState(0);
-      const [mode, setMode]             = useState("build");
-      const [testBlocks,  setTestBlocks] = useState(null);
+      const mountRef             = useRef(null);
+      const activeSlotRef        = useRef(0);
+      const activeSensorSlotRef  = useRef(0);
+      const modeRef              = useRef("build");
+      const [activeSlot, setActiveSlot]             = useState(0);
+      const [activeSensorSlot, setActiveSensorSlot] = useState(0);
+      const [mode, setMode]                         = useState("build");
+      const [testBlocks,  setTestBlocks]            = useState(null);
 
       const stateRef = useRef({
         scene: null, camera: null, renderer: null,
@@ -582,22 +623,25 @@
           );
         }
 
-        function createBlock(position, texIndex, shape) {
+        function createBlock(position, texIndex, shape, sensorKind) {
           const isSphere = shape === "sphere";
           const geometry = isSphere
             ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
             : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-          const material = isSphere
-            ? new THREE.MeshStandardMaterial({
-                color: 0x22c55e,
-                emissive: 0x16a34a,
-                emissiveIntensity: 0.35,
-              })
-            : new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
+          let material;
+          if (isSphere) {
+            const c = SENSOR_COLORS[sensorKind || "kill"];
+            material = new THREE.MeshStandardMaterial({
+              color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
+            });
+          } else {
+            material = new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
+          }
           const block = new THREE.Mesh(geometry, material);
           block.position.copy(position);
           block.userData.texIndex = texIndex;
           block.userData.shape = shape;
+          if (isSphere) block.userData.sensorKind = sensorKind || "kill";
           s.scene.add(block);
           s.objects.push(block);
           s.blocks.push(block);
@@ -663,10 +707,12 @@
                 s.isMovingBlock = false;
                 s.selectedBlock = null;
               } else if (s.ghostBlock.visible) {
+                const isSensor = modeRef.current === "sensors";
                 createBlock(
                   s.ghostBlock.position.clone(),
                   activeSlotRef.current,
-                  modeRef.current === "sensors" ? "sphere" : "block"
+                  isSensor ? "sphere" : "block",
+                  isSensor ? SENSOR_KINDS[activeSensorSlotRef.current] : undefined
                 );
               }
             }
@@ -702,7 +748,7 @@
         }
       }, []);
 
-      // Update ghost block geometry/material when mode changes
+      // Update ghost block geometry/material when mode or sensor selection changes
       useEffect(() => {
         const s = stateRef.current;
         if (!s.ghostBlock) return;
@@ -710,12 +756,21 @@
         s.ghostBlock.geometry = mode === "sensors"
           ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
           : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-        s.ghostBlock.material.color.setHex(mode === "sensors" ? 0x22c55e : 0x60a5fa);
-      }, [mode]);
+        if (mode === "sensors") {
+          s.ghostBlock.material.color.setHex(SENSOR_COLORS[SENSOR_KINDS[activeSensorSlot]].color);
+        } else {
+          s.ghostBlock.material.color.setHex(0x60a5fa);
+        }
+      }, [mode, activeSensorSlot]);
 
       function handleSetTexture(i) {
         activeSlotRef.current = i;
         setActiveSlot(i);
+      }
+
+      function handleSetSensor(i) {
+        activeSensorSlotRef.current = i;
+        setActiveSensorSlot(i);
       }
 
       function toggleMode() {
@@ -730,6 +785,7 @@
           pos: { x: b.position.x, y: b.position.y, z: b.position.z },
           texIndex: b.userData.texIndex,
           shape: b.userData.shape || "block",
+          sensorKind: b.userData.sensorKind,
         })));
       }
 
@@ -741,6 +797,7 @@
           pos: { x: b.position.x, y: b.position.y, z: b.position.z },
           texIndex: b.userData.texIndex,
           shape: b.userData.shape || "block",
+          sensorKind: b.userData.sensorKind,
         }));
         const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
         const url  = URL.createObjectURL(blob);
@@ -766,20 +823,24 @@
           data.forEach((item) => {
             const shape = item.shape || "block";
             const isSphere = shape === "sphere";
+            const sensorKind = item.sensorKind || "kill";
             const geometry = isSphere
               ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
               : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-            const material = isSphere
-              ? new THREE.MeshStandardMaterial({
-                  color: 0x22c55e,
-                  emissive: 0x16a34a,
-                  emissiveIntensity: 0.35,
-                })
-              : new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+            let material;
+            if (isSphere) {
+              const c = SENSOR_COLORS[sensorKind];
+              material = new THREE.MeshStandardMaterial({
+                color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
+              });
+            } else {
+              material = new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+            }
             const block = new THREE.Mesh(geometry, material);
             block.position.set(item.pos.x, item.pos.y, item.pos.z);
             block.userData.texIndex = item.texIndex;
             block.userData.shape = shape;
+            if (isSphere) block.userData.sensorKind = sensorKind;
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
@@ -800,6 +861,25 @@
         transition: "border-color 0.15s, box-shadow 0.15s",
         borderRadius: 4,
       });
+
+      const sensorSlotStyle = (i) => {
+        const kind   = SENSOR_KINDS[i];
+        const c      = SENSOR_COLORS[kind];
+        const hex    = "#" + c.color.toString(16).padStart(6, "0");
+        const active = activeSensorSlot === i;
+        return {
+          width: 60, height: 60,
+          border: active ? `2px solid ${hex}` : "2px solid #555",
+          boxShadow: active ? `0 0 14px ${hex}` : "none",
+          background: hex, color: "white",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", userSelect: "none",
+          fontFamily: "sans-serif", fontWeight: "bold", fontSize: 12,
+          letterSpacing: 0.5, textShadow: "1px 1px 2px rgba(0,0,0,0.6)",
+          transition: "border-color 0.15s, box-shadow 0.15s",
+          borderRadius: "50%",
+        };
+      };
 
       return (
         <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative", background: "#111827" }}>
@@ -848,26 +928,33 @@
               </label>
             </div>
 
-            {mode === "build" && (
-              <div style={{
-                position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
-                display: "flex", gap: 10, zIndex: 20,
-              }}>
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
-                ))}
-              </div>
-            )}
+            <div style={{
+              position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
+              display: "flex", gap: 10, zIndex: 20,
+            }}>
+              {mode === "build"
+                ? [0, 1, 2, 3, 4].map((i) => (
+                    <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
+                  ))
+                : [0, 1, 2].map((i) => (
+                    <div
+                      key={i}
+                      style={sensorSlotStyle(i)}
+                      onClick={() => handleSetSensor(i)}
+                      title={SENSOR_LABELS[SENSOR_KINDS[i]]}
+                    >
+                      {SENSOR_LABELS[SENSOR_KINDS[i]]}
+                    </div>
+                  ))}
+            </div>
 
             <div style={{
-              position: "absolute",
-              bottom: mode === "build" ? 90 : 20,
-              left: "50%", transform: "translateX(-50%)",
+              position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)",
               color: "rgba(255,255,255,0.55)", fontSize: 11, fontFamily: "sans-serif",
               textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap",
             }}>
               {mode === "sensors"
-                ? "Sensor mode — placing green spheres"
+                ? `Sensor mode — placing ${SENSOR_LABELS[SENSOR_KINDS[activeSensorSlot]]} sensor`
                 : "Build mode — placing blocks"}
               &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Drag on ground: rotate camera
             </div>
