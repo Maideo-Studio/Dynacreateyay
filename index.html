@@ -10,7 +10,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { overflow: hidden; background: #111827; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; background: #111827; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
   </style>
 </head>
 <body>
@@ -134,8 +134,22 @@
 
       const obstacles = [];
       const obstacleBoxes = [];
+      const sensors = [];
 
       for (const b of blocks) {
+        if (b.shape === "sphere") {
+          // Sensors: invisible kill-trigger zones in-game
+          const radius = (BLOCK_SIZE.x * BLOCK_SCALE) / 2;
+          sensors.push({
+            center: new THREE.Vector3(
+              b.pos.x * BLOCK_SCALE,
+              b.pos.y * BLOCK_SCALE - 1.1,
+              b.pos.z * BLOCK_SCALE
+            ),
+            radius,
+          });
+          continue;
+        }
         const mesh = new THREE.Mesh(
           new THREE.BoxGeometry(BLOCK_SIZE.x * BLOCK_SCALE, BLOCK_SIZE.y * BLOCK_SCALE, BLOCK_SIZE.z * BLOCK_SCALE),
           new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] })
@@ -155,7 +169,6 @@
       function updatePlayerHitbox() {
         playerBox.setFromCenterAndSize(player.position.clone(), new THREE.Vector3(1, 3.15, 1));
       }
-     
 
       const jumpSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/roblox-classic-jump.mp3");
       const walkSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/walk.mp3");
@@ -200,7 +213,7 @@
         obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
         for (let i = 0; i < obstacles.length; i++) {
           if (playerBox.intersectsBox(obstacleBoxes[i]) && velocity_y <= 0) {
-            player.position.y = obstacles[i].position.y + (BLOCK_SIZE.y * BLOCK_SCALE) +0.6;
+            player.position.y = obstacles[i].position.y + (BLOCK_SIZE.y * BLOCK_SCALE) + 0.6;
             isJumping  = false;
             velocity_y = 0;
           }
@@ -218,6 +231,23 @@
           player.position.set(0, 5, 0);
           velocity_y = 0;
           isJumping  = false;
+        }
+
+        // Sensor kill zones — touching a sensor sphere triggers death
+        const playerRadius = 0.75;
+        for (const sensor of sensors) {
+          const dx = player.position.x - sensor.center.x;
+          const dy = player.position.y - sensor.center.y;
+          const dz = player.position.z - sensor.center.z;
+          const reach = sensor.radius + playerRadius;
+          if (dx * dx + dy * dy + dz * dz < reach * reach) {
+            deathSound.currentTime = 0;
+            deathSound.play().catch(() => {});
+            player.position.set(0, 5, 0);
+            velocity_y = 0;
+            isJumping  = false;
+            break;
+          }
         }
 
         if (moved) {
@@ -294,7 +324,6 @@
 
     function TestMode({ blocks, onExit }) {
       const mountRef   = useRef(null);
-      const engineRef  = useRef(null);
       const [coords, setCoords]       = useState({ x: 0, y: 0, z: 0 });
       const [chatMessages, setChatMessages] = useState([]);
       const [chatInput,  setChatInput]      = useState("");
@@ -315,7 +344,6 @@
         mount.appendChild(renderer.domElement);
 
         const engine = createEngine(renderer, mount, blocks, setCoords);
-        engineRef.current = engine;
 
         const onResize = () => {
           engine.camera.aspect = mount.clientWidth / mount.clientHeight;
@@ -419,7 +447,9 @@
     function Game() {
       const mountRef       = useRef(null);
       const activeSlotRef  = useRef(0);
+      const modeRef        = useRef("build");
       const [activeSlot, setActiveSlot] = useState(0);
+      const [mode, setMode]             = useState("build");
       const [testBlocks,  setTestBlocks] = useState(null);
 
       const stateRef = useRef({
@@ -502,7 +532,7 @@
         canvas.addEventListener("mousemove", onMouseMove);
         canvas.addEventListener("mousedown", onMouseDown);
         canvas.addEventListener("mouseup",   onMouseUp);
-        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+        canvas.addEventListener("contextmenu", preventCtx);
         window.addEventListener("resize", onResize);
 
         function animate() {
@@ -517,11 +547,13 @@
           canvas.removeEventListener("mousemove", onMouseMove);
           canvas.removeEventListener("mousedown", onMouseDown);
           canvas.removeEventListener("mouseup",   onMouseUp);
-          canvas.removeEventListener("contextmenu", (e) => e.preventDefault());
+          canvas.removeEventListener("contextmenu", preventCtx);
           window.removeEventListener("resize", onResize);
           s.renderer.dispose();
           if (mount.contains(s.renderer.domElement)) mount.removeChild(s.renderer.domElement);
         };
+
+        function preventCtx(e) { e.preventDefault(); }
 
         function updateCamera() {
           const { yaw, pitch, radius, camera } = s;
@@ -550,13 +582,22 @@
           );
         }
 
-        function createBlock(position, texIndex) {
-          const block = new THREE.Mesh(
-            new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
-            new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] })
-          );
+        function createBlock(position, texIndex, shape) {
+          const isSphere = shape === "sphere";
+          const geometry = isSphere
+            ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
+            : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+          const material = isSphere
+            ? new THREE.MeshStandardMaterial({
+                color: 0x22c55e,
+                emissive: 0x16a34a,
+                emissiveIntensity: 0.35,
+              })
+            : new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
+          const block = new THREE.Mesh(geometry, material);
           block.position.copy(position);
           block.userData.texIndex = texIndex;
+          block.userData.shape = shape;
           s.scene.add(block);
           s.objects.push(block);
           s.blocks.push(block);
@@ -622,7 +663,11 @@
                 s.isMovingBlock = false;
                 s.selectedBlock = null;
               } else if (s.ghostBlock.visible) {
-                createBlock(s.ghostBlock.position.clone(), activeSlotRef.current);
+                createBlock(
+                  s.ghostBlock.position.clone(),
+                  activeSlotRef.current,
+                  modeRef.current === "sensors" ? "sphere" : "block"
+                );
               }
             }
 
@@ -657,9 +702,26 @@
         }
       }, []);
 
+      // Update ghost block geometry/material when mode changes
+      useEffect(() => {
+        const s = stateRef.current;
+        if (!s.ghostBlock) return;
+        s.ghostBlock.geometry.dispose();
+        s.ghostBlock.geometry = mode === "sensors"
+          ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
+          : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+        s.ghostBlock.material.color.setHex(mode === "sensors" ? 0x22c55e : 0x60a5fa);
+      }, [mode]);
+
       function handleSetTexture(i) {
         activeSlotRef.current = i;
         setActiveSlot(i);
+      }
+
+      function toggleMode() {
+        const next = mode === "build" ? "sensors" : "build";
+        modeRef.current = next;
+        setMode(next);
       }
 
       function enterTest() {
@@ -667,6 +729,7 @@
         setTestBlocks(s.blocks.map((b) => ({
           pos: { x: b.position.x, y: b.position.y, z: b.position.z },
           texIndex: b.userData.texIndex,
+          shape: b.userData.shape || "block",
         })));
       }
 
@@ -677,6 +740,7 @@
         const data = s.blocks.map((b) => ({
           pos: { x: b.position.x, y: b.position.y, z: b.position.z },
           texIndex: b.userData.texIndex,
+          shape: b.userData.shape || "block",
         }));
         const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
         const url  = URL.createObjectURL(blob);
@@ -700,12 +764,22 @@
           });
           s.blocks = [];
           data.forEach((item) => {
-            const block = new THREE.Mesh(
-              new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
-              new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] })
-            );
+            const shape = item.shape || "block";
+            const isSphere = shape === "sphere";
+            const geometry = isSphere
+              ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
+              : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+            const material = isSphere
+              ? new THREE.MeshStandardMaterial({
+                  color: 0x22c55e,
+                  emissive: 0x16a34a,
+                  emissiveIntensity: 0.35,
+                })
+              : new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+            const block = new THREE.Mesh(geometry, material);
             block.position.set(item.pos.x, item.pos.y, item.pos.z);
             block.userData.texIndex = item.texIndex;
+            block.userData.shape = shape;
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
@@ -724,6 +798,7 @@
         cursor: "pointer", userSelect: "none",
         fontFamily: "sans-serif", fontWeight: "bold", fontSize: 20,
         transition: "border-color 0.15s, box-shadow 0.15s",
+        borderRadius: 4,
       });
 
       return (
@@ -732,6 +807,23 @@
           {/* Builder — always mounted */}
           <div style={{ display: testBlocks !== null ? "none" : "block", width: "100%", height: "100%" }}>
             <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+
+            {/* Mode toggle (top-left) */}
+            <div style={{ position: "absolute", top: 10, left: 10, zIndex: 20 }}>
+              <button onClick={toggleMode} style={{
+                padding: "10px 18px",
+                background: mode === "sensors" ? "#a855f7" : "#f59e0b",
+                color: "white", border: "none", borderRadius: 5,
+                cursor: "pointer", fontWeight: "bold",
+                fontFamily: "sans-serif", fontSize: 14, minWidth: 110,
+                boxShadow: mode === "sensors"
+                  ? "0 0 12px rgba(168,85,247,0.6)"
+                  : "0 0 12px rgba(245,158,11,0.5)",
+                transition: "background 0.2s, box-shadow 0.2s",
+              }} title="Click to switch placement mode">
+                {mode === "sensors" ? "● Sensors" : "■ Build"}
+              </button>
+            </div>
 
             <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 10, zIndex: 20 }}>
               <button onClick={enterTest} style={{
@@ -756,21 +848,28 @@
               </label>
             </div>
 
-            <div style={{
-              position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
-              display: "flex", gap: 10, zIndex: 20,
-            }}>
-              {[0, 1, 2, 3, 4].map((i) => (
-                <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
-              ))}
-            </div>
+            {mode === "build" && (
+              <div style={{
+                position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
+                display: "flex", gap: 10, zIndex: 20,
+              }}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
+                ))}
+              </div>
+            )}
 
             <div style={{
-              position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)",
-              color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif",
+              position: "absolute",
+              bottom: mode === "build" ? 90 : 20,
+              left: "50%", transform: "translateX(-50%)",
+              color: "rgba(255,255,255,0.55)", fontSize: 11, fontFamily: "sans-serif",
               textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap",
             }}>
-              Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Drag on ground: rotate camera
+              {mode === "sensors"
+                ? "Sensor mode — placing green spheres"
+                : "Build mode — placing blocks"}
+              &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Drag on ground: rotate camera
             </div>
           </div>
 
