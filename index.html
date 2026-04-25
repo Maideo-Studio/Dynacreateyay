@@ -164,6 +164,7 @@
           new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] })
         );
         mesh.position.set(b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE);
+        if (b.scale) mesh.scale.set(b.scale.x, b.scale.y, b.scale.z);
         scene.add(mesh);
         obstacles.push(mesh);
         obstacleBoxes.push(new THREE.Box3().setFromObject(mesh));
@@ -229,15 +230,16 @@
         updatePlayerHitbox();
         obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
         for (let i = 0; i < obstacles.length; i++) {
-          if (!playerBox.intersectsBox(obstacleBoxes[i])) continue;
+          const box = obstacleBoxes[i];
+          if (!playerBox.intersectsBox(box)) continue;
           if (velocity_y <= 0) {
             // Landing on top of a block — feet (player.y - 1.6) sit on block top
-            player.position.y = obstacles[i].position.y + (BLOCK_SIZE.y * BLOCK_SCALE) / 2 + 1.6 + 0.01;
+            player.position.y = box.max.y + 1.6 + 0.01;
             isJumping  = false;
             velocity_y = 0;
           } else {
             // Bonk head — head top (player.y + 0.5) just under block bottom
-            player.position.y = obstacles[i].position.y - (BLOCK_SIZE.y * BLOCK_SCALE) / 2 - 0.5 - 0.01;
+            player.position.y = box.min.y - 0.5 - 0.01;
             velocity_y = 0;
           }
         }
@@ -539,12 +541,13 @@
       const [activeSensorSlot, setActiveSensorSlot] = useState(0);
       const [mode, setMode]                         = useState("build");
       const [testBlocks,  setTestBlocks]            = useState(null);
+      const [selectedScale, setSelectedScale]       = useState(null);
 
       const stateRef = useRef({
         scene: null, camera: null, renderer: null,
         raycaster: new THREE.Raycaster(),
         mouse: new THREE.Vector2(),
-        ground: null, ghostBlock: null, selectedBlock: null,
+        ground: null, ghostBlock: null, selectedBlock: null, scaleSelection: null,
         objects: [], blocks: [], blockTextures: [],
         isDraggingCamera: false, mouseDownTime: 0,
         isMovingBlock: false,
@@ -800,6 +803,17 @@
           if (e.button === 0) {
             s.raycaster.setFromCamera(s.mouse, s.camera);
             const hits = s.raycaster.intersectObjects(s.objects);
+            if (e.shiftKey) {
+              if (hits.length > 0 && hits[0].object !== s.ground) {
+                const m = hits[0].object;
+                s.scaleSelection = m;
+                setSelectedScale({ x: m.scale.x, y: m.scale.y, z: m.scale.z });
+              } else {
+                s.scaleSelection = null;
+                setSelectedScale(null);
+              }
+              return;
+            }
             if (hits.length > 0 && hits[0].object !== s.ground) {
               s.selectedBlock = hits[0].object;
             } else {
@@ -838,6 +852,10 @@
             const hits = s.raycaster.intersectObjects(s.objects);
             if (hits.length > 0 && hits[0].object !== s.ground) {
               const obj = hits[0].object;
+              if (s.scaleSelection === obj) {
+                s.scaleSelection = null;
+                setSelectedScale(null);
+              }
               s.scene.remove(obj);
               s.objects = s.objects.filter((o) => o !== obj);
               s.blocks  = s.blocks.filter((o) => o !== obj);
@@ -897,6 +915,7 @@
           texIndex: b.userData.texIndex,
           shape: b.userData.shape || "block",
           sensorKind: b.userData.sensorKind,
+          scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
         })));
       }
 
@@ -909,6 +928,7 @@
           texIndex: b.userData.texIndex,
           shape: b.userData.shape || "block",
           sensorKind: b.userData.sensorKind,
+          scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
         }));
         const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
         const url  = URL.createObjectURL(blob);
@@ -952,6 +972,7 @@
             block.userData.texIndex = item.texIndex;
             block.userData.shape = shape;
             if (isSphere) block.userData.sensorKind = sensorKind;
+            if (item.scale) block.scale.set(item.scale.x, item.scale.y, item.scale.z);
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
@@ -1073,8 +1094,55 @@
               {mode === "sensors"
                 ? `Sensor mode — placing ${SENSOR_LABELS[SENSOR_KINDS[activeSensorSlot]]} sensor`
                 : "Build mode — placing blocks"}
-              &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Drag on ground: rotate camera
+              &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Shift+click block: scale &nbsp;|&nbsp; Drag on ground: rotate camera
             </div>
+
+            {selectedScale !== null && (
+              <div style={{
+                position: "absolute", top: 80, right: 20,
+                background: "rgba(0,0,0,0.75)", border: "1px solid #60a5fa",
+                borderRadius: 6, padding: 12, color: "white",
+                fontFamily: "sans-serif", fontSize: 13, zIndex: 25, minWidth: 180,
+              }}>
+                <div style={{ fontWeight: "bold", marginBottom: 8, color: "#60a5fa" }}>Scale Block</div>
+                {["x", "y", "z"].map((axis) => (
+                  <div key={axis} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ width: 14, textTransform: "uppercase" }}>{axis}</span>
+                    <input
+                      type="range" min={0.25} max={5} step={0.25}
+                      value={selectedScale[axis]}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        const sel = stateRef.current.scaleSelection;
+                        if (!sel) return;
+                        sel.scale[axis] = v;
+                        setSelectedScale({ ...selectedScale, [axis]: v });
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ width: 36, textAlign: "right" }}>{selectedScale[axis].toFixed(2)}</span>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <button
+                    onClick={() => {
+                      const sel = stateRef.current.scaleSelection;
+                      if (!sel) return;
+                      sel.scale.set(1, 1, 1);
+                      setSelectedScale({ x: 1, y: 1, z: 1 });
+                    }}
+                    style={{ flex: 1, padding: "5px 8px", background: "#374151", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12 }}
+                  >Reset</button>
+                  <button
+                    onClick={() => {
+                      stateRef.current.scaleSelection = null;
+                      setSelectedScale(null);
+                    }}
+                    style={{ flex: 1, padding: "5px 8px", background: "#374151", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12 }}
+                  >Done</button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Test mode overlay */}
