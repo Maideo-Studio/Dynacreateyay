@@ -1,1163 +1,1353 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dynaverse</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body, #root { width: 100%; height: 100%; overflow: hidden; background: #111827; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  </style>
-</head>
-<body>
-  <div id="root"></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dynaverse</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root {
+        width: 100%; height: 100%; overflow: hidden;
+        background: #111827;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+    </style>
+    <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18.3.1",
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+          "three": "https://esm.sh/three@0.160.0"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
 
-  <script type="text/babel" data-presets="react">
-    const { useEffect, useRef, useState } = React;
+    <script type="text/babel" data-type="module" data-presets="react">
+      import React, { useEffect, useRef, useState } from "react";
+      import { createRoot } from "react-dom/client";
+      import * as THREE from "three";
 
-    /* ─────────────────────────── CONSTANTS ─────────────────────────── */
+      const BLOCK_SIZE = { x: 1.0, y: 0.5, z: 0.6 };
+      const BLOCK_SCALE = 4;
+      const TEXTURE_URLS = [
+        "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/roblox-stud%20(1).png",
+        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(20).png",
+        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(5).png",
+        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/download%20%2838%29%20%281%29.png",
+        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(8)%20(1).png",
+      ];
 
-    const BLOCK_SIZE   = { x: 1.0, y: 0.5, z: 0.6 };
-    const BLOCK_SCALE  = 4;
-    const TEXTURE_URLS = [
-      "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/roblox-stud%20(1).png",
-      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(20).png",
-      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(5).png",
-      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/download%20%2838%29%20%281%29.png",
-      "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/image%20(8)%20(1).png"
-    ];
+      const SENSOR_KINDS = ["kill", "teleport", "launch"];
 
-    const SENSOR_KINDS  = ["kill", "teleport", "launch"];
-    const SENSOR_COLORS = {
-      kill:     { color: 0xef4444, emissive: 0xb91c1c },
-      teleport: { color: 0xa855f7, emissive: 0x7e22ce },
-      launch:   { color: 0xf97316, emissive: 0xc2410c },
-    };
-    const SENSOR_LABELS = { kill: "Kill", teleport: "Tele", launch: "Jump" };
+      const SENSOR_COLORS = {
+        kill: { color: 0xef4444, emissive: 0xb91c1c },
+        teleport: { color: 0xa855f7, emissive: 0x7e22ce },
+        launch: { color: 0xf97316, emissive: 0xc2410c },
+      };
+      const SENSOR_LABELS = { kill: "Kill", teleport: "Tele", launch: "Jump" };
 
-    /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
+      const DEFAULT_SCRIPT = {
+        enabled: false,
+        custom:
+          "// Runs every frame in Test mode.\n" +
+          "// Available variables:\n" +
+          "//   block       — the THREE.Mesh for this block\n" +
+          "//   time        — seconds since test started\n" +
+          "//   dt          — seconds since last frame\n" +
+          "//   THREE       — the three.js library\n" +
+          "//   player      — the player object\n" +
+          "//   block.userData.basePos — original spawn position (Vector3)\n" +
+          "//\n" +
+          "// Set block.userData.rideable = true to carry the player while they stand on it.\n" +
+          "\n" +
+          "block.position.y = block.userData.basePos.y + Math.sin(time) * 1;\n" +
+          "block.userData.rideable = true;",
+      };
 
-    function createEngine(renderer, container, blocks, setCoords) {
-      let animId = 0;
-      const keys = {};
-
-      const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x000000, 0.000000000000002);
-
-      const bgLoader = new THREE.TextureLoader();
-      bgLoader.load(
-        "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/u_mey4kjj5ww-galaxy-1998_512.gif",
-        (tex) => { scene.background = tex; }
-      );
-
-      const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 70000000);
-
-      scene.add(new THREE.AmbientLight(0xffffff, 1.5));
-      const dir = new THREE.DirectionalLight(0xffffff, 2);
-      dir.position.set(5, 10, 5);
-      scene.add(dir);
-
-      const loader = new THREE.TextureLoader();
-
-      const groundTex = loader.load(TEXTURE_URLS[0]);
-      groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
-      groundTex.repeat.set(100, 100);
-      groundTex.magFilter = THREE.NearestFilter;
-      const ground = new THREE.Mesh(
-        new THREE.PlaneGeometry(100, 100),
-        new THREE.MeshStandardMaterial({ map: groundTex })
-      );
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.y = -1.1;
-      scene.add(ground);
-
-      const skyTex = loader.load("https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/ylanite-clouds-5514993_1920.jpg");
-      skyTex.wrapS = skyTex.wrapT = THREE.RepeatWrapping;
-      skyTex.repeat.set(5, 5);
-      const sky = new THREE.Mesh(
-        new THREE.BoxGeometry(500000000, 2000000, 500000000),
-        new THREE.MeshStandardMaterial({ map: skyTex, roughness: 1, side: THREE.DoubleSide })
-      );
-      scene.add(sky);
-
-      const player = new THREE.Group();
-      player.position.y = 0.5;
-      scene.add(player);
-
-      const geom = new THREE.BoxGeometry();
-
-      const head = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0xff00e6 }));
-      head.scale.set(1.5, 1, 1);
-      player.add(head);
-
-      const faceTex = loader.load("https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/output-onlinepngtools%20(19).png");
-      faceTex.magFilter = THREE.NearestFilter;
-      faceTex.minFilter = THREE.NearestFilter;
-      const faceMesh = new THREE.Mesh(geom, [
-        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
-        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
-        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
-        new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
-        new THREE.MeshStandardMaterial({ map: faceTex, transparent: true, alphaTest: 0.5 }),
-        new THREE.MeshStandardMaterial({ color: 0xffffff }),
-      ]);
-      faceMesh.position.set(0, 0, 0.01);
-      faceMesh.scale.set(1.5, 1, 0.99);
-      player.add(faceMesh);
-
-      const body = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x990099 }));
-      body.position.set(0, -0.8, 0);
-      body.scale.set(0.6, 0.6, 0.5);
-      player.add(body);
-
-      const limbMat = new THREE.MeshStandardMaterial({ color: 0xff00e6 });
-
-      function makeLimb(px, py) {
-        const pivot = new THREE.Group();
-        pivot.position.set(px, py, 0);
-        const mesh = new THREE.Mesh(geom, limbMat);
-        mesh.scale.set(0.2, 0.6, 0.3);
-        mesh.position.y = -0.3;
-        pivot.add(mesh);
-        player.add(pivot);
-        return pivot;
+      function compileScript(script) {
+        if (!script.enabled || !script.custom.trim()) return null;
+        try {
+          const fn = new Function("block", "time", "dt", "THREE", "player", script.custom);
+          return (block, time, dt, player) => {
+            try { fn(block, time, dt, THREE, player); } catch {}
+          };
+        } catch { return null; }
       }
 
-      const leftArmPivot  = makeLimb(-0.41, -0.5);
-      const rightArmPivot = makeLimb( 0.41, -0.5);
-      const leftLegPivot  = makeLimb(-0.17, -1.0);
-      const rightLegPivot = makeLimb( 0.17, -1.0);
+      /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
 
-      const blockTextures = TEXTURE_URLS.map((url) => {
-        const t = loader.load(url);
-        t.magFilter = THREE.NearestFilter;
-        t.wrapS = t.wrapT = THREE.RepeatWrapping;
-        t.repeat.set(4, 2);
-        return t;
-      });
+      function createEngine(renderer, container, blocks, setCoords) {
+        let animId = 0;
+        const keys = {};
 
-      const obstacles = [];
-      const obstacleBoxes = [];
-      const sensors = [];
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.000000000000002);
 
-      for (const b of blocks) {
-        if (b.shape === "sphere") {
-          // Sensors: invisible trigger zones in-game
-          const radius = (BLOCK_SIZE.x * BLOCK_SCALE) / 2;
-          sensors.push({
-            center: new THREE.Vector3(
-              b.pos.x * BLOCK_SCALE,
-              b.pos.y * BLOCK_SCALE - 1.1,
-              b.pos.z * BLOCK_SCALE
+        const bgLoader = new THREE.TextureLoader();
+        bgLoader.load(
+          "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/u_mey4kjj5ww-galaxy-1998_512.gif",
+          (tex) => { scene.background = tex; },
+        );
+
+        const camera = new THREE.PerspectiveCamera(
+          75, container.clientWidth / container.clientHeight, 0.1, 70000000
+        );
+
+        scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+        const dir = new THREE.DirectionalLight(0xffffff, 2);
+        dir.position.set(5, 10, 5);
+        scene.add(dir);
+
+        const loader = new THREE.TextureLoader();
+
+        const groundTex = loader.load(TEXTURE_URLS[0]);
+        groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
+        groundTex.repeat.set(100, 100);
+        groundTex.magFilter = THREE.NearestFilter;
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(100, 100),
+          new THREE.MeshStandardMaterial({ map: groundTex }),
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -1.1;
+        scene.add(ground);
+
+        const skyTex = loader.load(
+          "https://raw.githubusercontent.com/Maideo-Studio/textures/refs/heads/main/ylanite-clouds-5514993_1920.jpg",
+        );
+        skyTex.wrapS = skyTex.wrapT = THREE.RepeatWrapping;
+        skyTex.repeat.set(5, 5);
+        const sky = new THREE.Mesh(
+          new THREE.BoxGeometry(500000000, 2000000, 500000000),
+          new THREE.MeshStandardMaterial({ map: skyTex, roughness: 1, side: THREE.DoubleSide }),
+        );
+        scene.add(sky);
+
+        const player = new THREE.Group();
+        player.position.y = 0.5;
+        scene.add(player);
+
+        const geom = new THREE.BoxGeometry();
+
+        const head = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0xff00e6 }));
+        head.scale.set(1.5, 1, 1);
+        player.add(head);
+
+        const faceTex = loader.load(
+          "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/output-onlinepngtools%20(19).png",
+        );
+        faceTex.magFilter = THREE.NearestFilter;
+        faceTex.minFilter = THREE.NearestFilter;
+        const faceMesh = new THREE.Mesh(geom, [
+          new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+          new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+          new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+          new THREE.MeshStandardMaterial({ color: 0xff00e6 }),
+          new THREE.MeshStandardMaterial({ map: faceTex, transparent: true, alphaTest: 0.5 }),
+          new THREE.MeshStandardMaterial({ color: 0xffffff }),
+        ]);
+        faceMesh.position.set(0, 0, 0.01);
+        faceMesh.scale.set(1.5, 1, 0.99);
+        player.add(faceMesh);
+
+        const body = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x990099 }));
+        body.position.set(0, -0.8, 0);
+        body.scale.set(0.6, 0.6, 0.5);
+        player.add(body);
+
+        const limbMat = new THREE.MeshStandardMaterial({ color: 0xff00e6 });
+        function makeLimb(px, py) {
+          const pivot = new THREE.Group();
+          pivot.position.set(px, py, 0);
+          const mesh = new THREE.Mesh(geom, limbMat);
+          mesh.scale.set(0.2, 0.6, 0.3);
+          mesh.position.y = -0.3;
+          pivot.add(mesh);
+          player.add(pivot);
+          return pivot;
+        }
+        const leftArmPivot = makeLimb(-0.41, -0.5);
+        const rightArmPivot = makeLimb(0.41, -0.5);
+        const leftLegPivot = makeLimb(-0.17, -1.0);
+        const rightLegPivot = makeLimb(0.17, -1.0);
+
+        const blockTextures = TEXTURE_URLS.map((url) => {
+          const t = loader.load(url);
+          t.magFilter = THREE.NearestFilter;
+          t.wrapS = t.wrapT = THREE.RepeatWrapping;
+          t.repeat.set(4, 2);
+          return t;
+        });
+
+        const obstacles = [];
+        const obstacleBoxes = [];
+        const sensors = [];
+
+        for (const b of blocks) {
+          if (b.shape === "sphere") {
+            const radius = (BLOCK_SIZE.x * BLOCK_SCALE) / 2;
+            sensors.push({
+              center: new THREE.Vector3(
+                b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE,
+              ),
+              radius,
+              kind: b.sensorKind || "kill",
+            });
+            continue;
+          }
+          const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(
+              BLOCK_SIZE.x * BLOCK_SCALE, BLOCK_SIZE.y * BLOCK_SCALE, BLOCK_SIZE.z * BLOCK_SCALE,
             ),
-            radius,
-            kind: b.sensorKind || "kill",
-          });
-          continue;
+            new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] }),
+          );
+          mesh.position.set(
+            b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE,
+          );
+          if (b.scale) mesh.scale.set(b.scale.x, b.scale.y, b.scale.z);
+          const script = b.script ?? { ...DEFAULT_SCRIPT };
+          mesh.userData = {
+            texIndex: b.texIndex,
+            shape: "block",
+            script,
+            basePos: mesh.position.clone(),
+            rideable: false,
+            runtime: compileScript(script) || undefined,
+          };
+          scene.add(mesh);
+          obstacles.push(mesh);
+          obstacleBoxes.push(new THREE.Box3().setFromObject(mesh));
         }
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(BLOCK_SIZE.x * BLOCK_SCALE, BLOCK_SIZE.y * BLOCK_SCALE, BLOCK_SIZE.z * BLOCK_SCALE),
-          new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] })
+
+        const sensorCooldown = sensors.map(() => 0);
+
+        let velocity_y = 0, isJumping = false;
+        const gravity = -0.05, jumpStrength = 0.8, speed = 0.15, rotationSpeed = 0.05;
+        let cameraAngle = 0, walkTime = 0;
+        let cameraDistance = 8;
+        const cameraHeight = 4;
+        const MIN_ZOOM = 3, MAX_ZOOM = 30;
+        const playerBox = new THREE.Box3();
+        let standingOn = null;
+        let standingOnPrev = new THREE.Vector3();
+
+        function updatePlayerHitbox() {
+          playerBox.set(
+            new THREE.Vector3(player.position.x - 0.5, player.position.y - 1.6, player.position.z - 0.5),
+            new THREE.Vector3(player.position.x + 0.5, player.position.y + 0.5, player.position.z + 0.5),
+          );
+        }
+
+        const jumpSound = new Audio(
+          "https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/roblox-classic-jump.mp3",
         );
-        mesh.position.set(b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE);
-        if (b.scale) mesh.scale.set(b.scale.x, b.scale.y, b.scale.z);
-        scene.add(mesh);
-        obstacles.push(mesh);
-        obstacleBoxes.push(new THREE.Box3().setFromObject(mesh));
-      }
-
-      const sensorCooldown = sensors.map(() => 0);
-
-      let velocity_y = 0, isJumping = false;
-      const gravity = -0.05, jumpStrength = 0.8, speed = 0.15, rotationSpeed = 0.05;
-      let cameraAngle = 0, walkTime = 0;
-      let cameraDistance = 8;
-      const cameraHeight = 4;
-      const MIN_ZOOM = 3, MAX_ZOOM = 30;
-      const playerBox = new THREE.Box3();
-
-      // Hitbox matches the visible character: head top at +0.5, feet at -1.6
-      function updatePlayerHitbox() {
-        playerBox.set(
-          new THREE.Vector3(player.position.x - 0.5, player.position.y - 1.6, player.position.z - 0.5),
-          new THREE.Vector3(player.position.x + 0.5, player.position.y + 0.5, player.position.z + 0.5)
+        const walkSound = new Audio(
+          "https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/walk.mp3",
         );
-      }
+        walkSound.loop = true;
+        const deathSound = new Audio(
+          "https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/audiomass-output%20(11).mp3",
+        );
+        let walkSoundPlaying = false;
 
-      const jumpSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/roblox-classic-jump.mp3");
-      const walkSound  = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/walk.mp3");
-      walkSound.loop   = true;
-      const deathSound = new Audio("https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/audiomass-output%20(11).mp3");
-      let walkSoundPlaying = false;
+        const clock = new THREE.Clock();
 
-      function updateMovement() {
-        const forward = new THREE.Vector3();
-        camera.getWorldDirection(forward);
-        forward.y = 0;
-        forward.normalize();
-
-        const right = new THREE.Vector3();
-        right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-
-        let moved = false;
-        const oldPos = player.position.clone();
-
-        if (keys["w"]) { player.position.add(forward.clone().multiplyScalar(speed));  moved = true; }
-        if (keys["s"]) { player.position.add(forward.clone().multiplyScalar(-speed)); moved = true; }
-        if (keys["a"]) { player.position.add(right.clone().multiplyScalar(-speed));   moved = true; }
-        if (keys["d"]) { player.position.add(right.clone().multiplyScalar(speed));    moved = true; }
-
-        updatePlayerHitbox();
-        obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
-        if (obstacleBoxes.some((b) => playerBox.intersectsBox(b))) {
-          player.position.copy(oldPos);
-        }
-
-        if (keys[" "] && !isJumping) {
-          velocity_y = jumpStrength;
-          isJumping  = true;
-          jumpSound.currentTime = 0;
-          jumpSound.play().catch(() => {});
-        }
-
-        player.position.y += velocity_y;
-        velocity_y += gravity;
-
-        updatePlayerHitbox();
-        obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
-        for (let i = 0; i < obstacles.length; i++) {
-          const box = obstacleBoxes[i];
-          if (!playerBox.intersectsBox(box)) continue;
-          if (velocity_y <= 0) {
-            // Landing on top of a block — feet (player.y - 1.6) sit on block top
-            player.position.y = box.max.y + 1.6 + 0.01;
-            isJumping  = false;
-            velocity_y = 0;
-          } else {
-            // Bonk head — head top (player.y + 0.5) just under block bottom
-            player.position.y = box.min.y - 0.5 - 0.01;
-            velocity_y = 0;
+        function runScripts(time, dt) {
+          for (const mesh of obstacles) {
+            mesh.userData.rideable = false;
+            const fn = mesh.userData.runtime;
+            if (fn) fn(mesh, time, dt, player);
           }
         }
 
-        if (Math.abs(player.position.x) < 50 && Math.abs(player.position.z) < 50 && player.position.y < 0.5) {
-          player.position.y = 0.5;
-          isJumping  = false;
-          velocity_y = 0;
-        }
+        function updateMovement() {
+          const dt = Math.min(0.05, clock.getDelta());
+          const time = clock.getElapsedTime();
+          runScripts(time, dt);
 
-        if (player.position.y < -500) {
-          deathSound.currentTime = 0;
-          deathSound.play().catch(() => {});
-          player.position.set(0, 5, 0);
-          velocity_y = 0;
-          isJumping  = false;
-        }
+          if (standingOn && standingOn.userData.rideable) {
+            const delta = standingOn.position.clone().sub(standingOnPrev);
+            player.position.add(delta);
+          }
+          if (standingOn) standingOnPrev.copy(standingOn.position);
 
-        // Sensors: invisible triggers (kill / teleport / launch)
-        const playerRadius = 0.75;
-        for (let i = 0; i < sensors.length; i++) {
-          const sensor = sensors[i];
-          if (sensorCooldown[i] > 0) { sensorCooldown[i] -= 1; continue; }
-          const dx = player.position.x - sensor.center.x;
-          const dy = player.position.y - sensor.center.y;
-          const dz = player.position.z - sensor.center.z;
-          const reach = sensor.radius + playerRadius;
-          if (dx * dx + dy * dy + dz * dz >= reach * reach) continue;
+          const forward = new THREE.Vector3();
+          camera.getWorldDirection(forward);
+          forward.y = 0;
+          forward.normalize();
 
-          if (sensor.kind === "kill") {
+          const right = new THREE.Vector3();
+          right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+          let moved = false;
+          const oldPos = player.position.clone();
+
+          if (keys["w"]) { player.position.add(forward.clone().multiplyScalar(speed)); moved = true; }
+          if (keys["s"]) { player.position.add(forward.clone().multiplyScalar(-speed)); moved = true; }
+          if (keys["a"]) { player.position.add(right.clone().multiplyScalar(-speed)); moved = true; }
+          if (keys["d"]) { player.position.add(right.clone().multiplyScalar(speed)); moved = true; }
+
+          updatePlayerHitbox();
+          obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
+          if (obstacleBoxes.some((b) => playerBox.intersectsBox(b))) {
+            player.position.copy(oldPos);
+          }
+
+          if (keys[" "] && !isJumping) {
+            velocity_y = jumpStrength;
+            isJumping = true;
+            jumpSound.currentTime = 0;
+            jumpSound.play().catch(() => {});
+          }
+
+          player.position.y += velocity_y;
+          velocity_y += gravity;
+
+          updatePlayerHitbox();
+          obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
+          let landedOn = null;
+          for (let i = 0; i < obstacles.length; i++) {
+            const box = obstacleBoxes[i];
+            if (!playerBox.intersectsBox(box)) continue;
+            if (velocity_y <= 0) {
+              player.position.y = box.max.y + 1.6 + 0.01;
+              isJumping = false;
+              velocity_y = 0;
+              landedOn = obstacles[i];
+            } else {
+              player.position.y = box.min.y - 0.5 - 0.01;
+              velocity_y = 0;
+            }
+          }
+          if (landedOn) {
+            if (standingOn !== landedOn) {
+              standingOn = landedOn;
+              standingOnPrev.copy(landedOn.position);
+            }
+          } else {
+            standingOn = null;
+          }
+
+          if (Math.abs(player.position.x) < 50 && Math.abs(player.position.z) < 50 && player.position.y < 0.5) {
+            player.position.y = 0.5;
+            isJumping = false;
+            velocity_y = 0;
+          }
+
+          if (player.position.y < -500) {
             deathSound.currentTime = 0;
             deathSound.play().catch(() => {});
             player.position.set(0, 5, 0);
             velocity_y = 0;
-            isJumping  = false;
-            break;
+            isJumping = false;
           }
-          if (sensor.kind === "launch") {
-            velocity_y = jumpStrength * 3.2;
-            isJumping  = true;
-            jumpSound.currentTime = 0;
-            jumpSound.play().catch(() => {});
-            sensorCooldown[i] = 20;
-            break;
-          }
-          if (sensor.kind === "teleport") {
-            let dest = -1;
-            for (let k = 1; k < sensors.length; k++) {
-              const j = (i + k) % sensors.length;
-              if (sensors[j].kind === "teleport") { dest = j; break; }
-            }
-            if (dest !== -1) {
-              const d = sensors[dest];
-              player.position.set(d.center.x, d.center.y + 2, d.center.z);
+
+          const playerRadius = 0.75;
+          for (let i = 0; i < sensors.length; i++) {
+            const sensor = sensors[i];
+            if (sensorCooldown[i] > 0) { sensorCooldown[i] -= 1; continue; }
+            const dx = player.position.x - sensor.center.x;
+            const dy = player.position.y - sensor.center.y;
+            const dz = player.position.z - sensor.center.z;
+            const reach = sensor.radius + playerRadius;
+            if (dx * dx + dy * dy + dz * dz >= reach * reach) continue;
+
+            if (sensor.kind === "kill") {
+              deathSound.currentTime = 0;
+              deathSound.play().catch(() => {});
+              player.position.set(0, 5, 0);
               velocity_y = 0;
-              isJumping  = false;
-              sensorCooldown[i]    = 30;
-              sensorCooldown[dest] = 30;
+              isJumping = false;
+              break;
             }
-            break;
+            if (sensor.kind === "launch") {
+              velocity_y = jumpStrength * 3.2;
+              isJumping = true;
+              jumpSound.currentTime = 0;
+              jumpSound.play().catch(() => {});
+              sensorCooldown[i] = 20;
+              break;
+            }
+            if (sensor.kind === "teleport") {
+              let dest = -1;
+              for (let k = 1; k < sensors.length; k++) {
+                const j = (i + k) % sensors.length;
+                if (sensors[j].kind === "teleport") { dest = j; break; }
+              }
+              if (dest !== -1) {
+                const d = sensors[dest];
+                player.position.set(d.center.x, d.center.y + 2, d.center.z);
+                velocity_y = 0;
+                isJumping = false;
+                sensorCooldown[i] = 30;
+                sensorCooldown[dest] = 30;
+              }
+              break;
+            }
+          }
+
+          if (moved) {
+            const vel = new THREE.Vector3();
+            if (keys["w"]) vel.add(forward);
+            if (keys["s"]) vel.add(forward.clone().negate());
+            if (keys["a"]) vel.add(right.clone().negate());
+            if (keys["d"]) vel.add(right);
+            if (vel.lengthSq() > 0) {
+              vel.normalize();
+              player.rotation.y = Math.atan2(vel.x, vel.z);
+            }
+          }
+
+          if (keys["e"]) cameraAngle -= rotationSpeed;
+          if (keys["q"]) cameraAngle += rotationSpeed;
+
+          camera.position.set(
+            player.position.x + cameraDistance * Math.sin(cameraAngle),
+            player.position.y + cameraHeight,
+            player.position.z + cameraDistance * Math.cos(cameraAngle),
+          );
+          camera.lookAt(player.position);
+
+          if (moved && !walkSoundPlaying) {
+            walkSound.play().catch(() => {});
+            walkSoundPlaying = true;
+          } else if (!moved && walkSoundPlaying) {
+            walkSound.pause();
+            walkSound.currentTime = 0;
+            walkSoundPlaying = false;
+          }
+
+          if (moved) {
+            walkTime += 0.15;
+            const swing = Math.sin(walkTime) * 0.8;
+            leftLegPivot.rotation.x = swing;
+            rightLegPivot.rotation.x = -swing;
+            leftArmPivot.rotation.x = -swing;
+            rightArmPivot.rotation.x = swing;
+          } else {
+            leftLegPivot.rotation.x = 0;
+            rightLegPivot.rotation.x = 0;
+            leftArmPivot.rotation.x = 0;
+            rightArmPivot.rotation.x = 0;
           }
         }
 
-        if (moved) {
-          const vel = new THREE.Vector3();
-          if (keys["w"]) vel.add(forward);
-          if (keys["s"]) vel.add(forward.clone().negate());
-          if (keys["a"]) vel.add(right.clone().negate());
-          if (keys["d"]) vel.add(right);
-          if (vel.lengthSq() > 0) {
-            vel.normalize();
-            player.rotation.y = Math.atan2(vel.x, vel.z);
-          }
-        }
+        const onKeyDown = (e) => { keys[e.key.toLowerCase()] = true; };
+        const onKeyUp = (e) => { keys[e.key.toLowerCase()] = false; };
+        window.addEventListener("keydown", onKeyDown);
+        window.addEventListener("keyup", onKeyUp);
 
-        if (keys["e"]) cameraAngle -= rotationSpeed;
-        if (keys["q"]) cameraAngle += rotationSpeed;
-
-        camera.position.set(
-          player.position.x + cameraDistance * Math.sin(cameraAngle),
-          player.position.y + cameraHeight,
-          player.position.z + cameraDistance * Math.cos(cameraAngle)
-        );
-        camera.lookAt(player.position);
-
-        if (moved && !walkSoundPlaying) {
-          walkSound.play().catch(() => {});
-          walkSoundPlaying = true;
-        } else if (!moved && walkSoundPlaying) {
-          walkSound.pause();
-          walkSound.currentTime = 0;
-          walkSoundPlaying = false;
-        }
-
-        if (moved) {
-          walkTime += 0.15;
-          const swing = Math.sin(walkTime) * 0.8;
-          leftLegPivot.rotation.x  =  swing;
-          rightLegPivot.rotation.x = -swing;
-          leftArmPivot.rotation.x  = -swing;
-          rightArmPivot.rotation.x =  swing;
-        } else {
-          leftLegPivot.rotation.x  = 0;
-          rightLegPivot.rotation.x = 0;
-          leftArmPivot.rotation.x  = 0;
-          rightArmPivot.rotation.x = 0;
-        }
-      }
-
-      const onKeyDown = (e) => { keys[e.key.toLowerCase()] = true; };
-      const onKeyUp   = (e) => { keys[e.key.toLowerCase()] = false; };
-      window.addEventListener("keydown", onKeyDown);
-      window.addEventListener("keyup",   onKeyUp);
-
-      const onWheel = (e) => {
-        e.preventDefault();
-        cameraDistance = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, cameraDistance + e.deltaY * 0.01));
-      };
-      let pinchStartDist = 0, pinchStartCamera = cameraDistance;
-      const touchDist = (e) => {
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        return Math.hypot(dx, dy);
-      };
-      const onTouchStart = (e) => {
-        if (e.touches.length === 2) {
-          pinchStartDist = touchDist(e);
-          pinchStartCamera = cameraDistance;
-        }
-      };
-      const onTouchMove = (e) => {
-        if (e.touches.length === 2 && pinchStartDist > 0) {
-          e.preventDefault();
-          const ratio = pinchStartDist / touchDist(e);
-          cameraDistance = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartCamera * ratio));
-        }
-      };
-      const onTouchEnd = (e) => { if (e.touches.length < 2) pinchStartDist = 0; };
-      container.addEventListener("wheel", onWheel, { passive: false });
-      container.addEventListener("touchstart", onTouchStart, { passive: false });
-      container.addEventListener("touchmove", onTouchMove, { passive: false });
-      container.addEventListener("touchend", onTouchEnd);
-      container.addEventListener("touchcancel", onTouchEnd);
-
-      function animate() {
-        animId = requestAnimationFrame(animate);
-        updateMovement();
-        setCoords({ x: player.position.x, y: player.position.y, z: player.position.z });
-        renderer.render(scene, camera);
-      }
-      animate();
-
-      return {
-        camera,
-        destroy() {
-          cancelAnimationFrame(animId);
-          window.removeEventListener("keydown", onKeyDown);
-          window.removeEventListener("keyup",   onKeyUp);
-          container.removeEventListener("wheel", onWheel);
-          container.removeEventListener("touchstart", onTouchStart);
-          container.removeEventListener("touchmove", onTouchMove);
-          container.removeEventListener("touchend", onTouchEnd);
-          container.removeEventListener("touchcancel", onTouchEnd);
-          walkSound.pause();
-        },
-      };
-    }
-
-    /* ─────────────────────────── TEST MODE COMPONENT ─────────────────────────── */
-
-    function TestMode({ blocks, onExit }) {
-      const mountRef   = useRef(null);
-      const [coords, setCoords]       = useState({ x: 0, y: 0, z: 0 });
-      const [chatMessages, setChatMessages] = useState([]);
-      const [chatInput,  setChatInput]      = useState("");
-
-      useEffect(() => {
-        const mount = mountRef.current;
-        if (!mount) return;
-
-        let renderer;
-        try {
-          renderer = new THREE.WebGLRenderer({ antialias: true });
-        } catch {
-          return;
-        }
-
-        renderer.setSize(mount.clientWidth, mount.clientHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
-        mount.appendChild(renderer.domElement);
-
-        const engine = createEngine(renderer, mount, blocks, setCoords);
-
-        const onResize = () => {
-          engine.camera.aspect = mount.clientWidth / mount.clientHeight;
-          engine.camera.updateProjectionMatrix();
-          renderer.setSize(mount.clientWidth, mount.clientHeight);
-        };
-        window.addEventListener("resize", onResize);
-
-        return () => {
-          engine.destroy();
-          renderer.dispose();
-          if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
-          window.removeEventListener("resize", onResize);
-        };
-      }, []);
-
-      function handleChat(e) {
-        e.preventDefault();
-        if (!chatInput.trim()) return;
-        setChatMessages((prev) => [...prev.slice(-49), { user: "you", msg: chatInput.trim() }]);
-        setChatInput("");
-      }
-
-      return (
-        <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative" }}>
-          <div
-            ref={mountRef}
-            style={{
-              width: "100%", height: "100%",
-              background: "url('https://raw.githubusercontent.com/Maideo-Studio/textures/f62722361238fc9d7e629114c85ebc089e061398/placidplace-space-14958%20(1).gif') center/400%",
-            }}
-          />
-
-          <div style={{
-            position: "absolute", top: 10, left: 10,
-            color: "white", fontSize: 14,
-            background: "rgba(0,0,0,0.5)", padding: "6px 10px",
-            borderRadius: 6, zIndex: 3000, fontFamily: "monospace",
-          }}>
-            X: {coords.x.toFixed(2)} &nbsp; Y: {coords.y.toFixed(2)} &nbsp; Z: {coords.z.toFixed(2)}
-          </div>
-
-          <div style={{
-            position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
-            color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "sans-serif",
-            background: "rgba(0,0,0,0.4)", padding: "5px 12px", borderRadius: 6, zIndex: 3000,
-            whiteSpace: "nowrap",
-          }}>
-            WASD: move &nbsp;|&nbsp; Space: jump &nbsp;|&nbsp; Q/E: rotate camera
-          </div>
-
-          <button
-            onClick={onExit}
-            style={{
-              position: "absolute", top: 10, right: 10, zIndex: 3000,
-              padding: "10px 18px", background: "#ef4444", color: "white",
-              border: "none", borderRadius: 6, cursor: "pointer",
-              fontWeight: "bold", fontFamily: "sans-serif", fontSize: 14,
-            }}
-          >
-            ✕ Stop Test
-          </button>
-
-          <div style={{
-            position: "absolute", bottom: 16, left: 16, width: 320,
-            zIndex: 2000, display: "flex", flexDirection: "column", gap: 8,
-          }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto", padding: 8 }}>
-              {chatMessages.map((m, i) => (
-                <div key={i} style={{ color: "#fff", fontSize: 13, textShadow: "1px 1px 2px #000" }}>
-                  <span style={{ color: "#f9a8d4", fontWeight: "bold" }}>{m.user}:</span> {m.msg}
-                </div>
-              ))}
-            </div>
-            <form onSubmit={handleChat} style={{ display: "flex", gap: 6 }}>
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Press Enter to chat…"
-                maxLength={100}
-                style={{
-                  flex: 1, padding: "6px 10px", borderRadius: 6,
-                  border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)",
-                  color: "#fff", fontSize: 13, outline: "none",
-                }}
-                onKeyDown={(e) => e.stopPropagation()}
-                onKeyUp={(e) => e.stopPropagation()}
-              />
-              <button type="submit" style={{
-                padding: "6px 14px", borderRadius: 6, border: "none",
-                background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer",
-              }}>Send</button>
-            </form>
-          </div>
-        </div>
-      );
-    }
-
-    /* ─────────────────────────── BUILDER COMPONENT ─────────────────────────── */
-
-    function Game() {
-      const mountRef             = useRef(null);
-      const activeSlotRef        = useRef(0);
-      const activeSensorSlotRef  = useRef(0);
-      const modeRef              = useRef("build");
-      const [activeSlot, setActiveSlot]             = useState(0);
-      const [activeSensorSlot, setActiveSensorSlot] = useState(0);
-      const [mode, setMode]                         = useState("build");
-      const [testBlocks,  setTestBlocks]            = useState(null);
-      const [selectedScale, setSelectedScale]       = useState(null);
-
-      const stateRef = useRef({
-        scene: null, camera: null, renderer: null,
-        raycaster: new THREE.Raycaster(),
-        mouse: new THREE.Vector2(),
-        ground: null, ghostBlock: null, selectedBlock: null, scaleSelection: null,
-        objects: [], blocks: [], blockTextures: [],
-        isDraggingCamera: false, mouseDownTime: 0,
-        isMovingBlock: false,
-        startMousePos: { x: 0, y: 0 },
-        previousMousePosition: { x: 0, y: 0 },
-        yaw: 0.5, pitch: 0.8, radius: 15, animFrameId: 0,
-        cameraPos: new THREE.Vector3(
-          15 * Math.sin(0.5) * Math.cos(0.8),
-          15 * Math.sin(0.8),
-          15 * Math.cos(0.5) * Math.cos(0.8),
-        ),
-        resetCamera: null,
-      });
-
-      const resetCameraView = () => stateRef.current.resetCamera && stateRef.current.resetCamera();
-
-      useEffect(() => {
-        const mount = mountRef.current;
-        if (!mount) return;
-        const s = stateRef.current;
-
-        s.scene = new THREE.Scene();
-        s.scene.background = new THREE.Color(0xffffff);
-
-        s.camera = new THREE.PerspectiveCamera(45, mount.clientWidth / mount.clientHeight, 0.1, 1000);
-
-        try {
-          s.renderer = new THREE.WebGLRenderer({ antialias: true });
-        } catch {
-          const msg = document.createElement("div");
-          msg.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-size:18px;background:#111827;text-align:center;padding:20px;";
-          msg.textContent = "WebGL is not available in this environment. Please open the app in a modern browser to play Dynaverse.";
-          mount.appendChild(msg);
-          return;
-        }
-
-        s.renderer.setSize(mount.clientWidth, mount.clientHeight);
-        s.renderer.setPixelRatio(window.devicePixelRatio);
-        mount.appendChild(s.renderer.domElement);
-
-        const loader = new THREE.TextureLoader();
-        TEXTURE_URLS.forEach((url, i) => {
-          const tex = loader.load(url);
-          tex.magFilter = THREE.NearestFilter;
-          tex.minFilter = THREE.NearestFilter;
-          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-          tex.repeat.set(4, 2);
-          s.blockTextures[i] = tex;
-        });
-
-        const groundTex = loader.load(TEXTURE_URLS[0]);
-        groundTex.magFilter = THREE.NearestFilter;
-        groundTex.minFilter = THREE.NearestFilter;
-        groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
-        groundTex.repeat.set(73, 70);
-
-        s.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        dirLight.position.set(10, 20, 10);
-        s.scene.add(dirLight);
-
-        const ground = new THREE.Mesh(
-          new THREE.PlaneGeometry(20, 20),
-          new THREE.MeshStandardMaterial({ map: groundTex })
-        );
-        ground.rotation.x = -Math.PI / 2;
-        s.scene.add(ground);
-        s.objects.push(ground);
-        s.ground = ground;
-
-        const ghost = new THREE.Mesh(
-          new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
-          new THREE.MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.4 })
-        );
-        s.scene.add(ghost);
-        s.ghostBlock = ghost;
-
-        updateCamera();
-
-        const canvas = s.renderer.domElement;
-        canvas.addEventListener("mousemove", onMouseMove);
-        canvas.addEventListener("mousedown", onMouseDown);
-        canvas.addEventListener("mouseup",   onMouseUp);
-        canvas.addEventListener("contextmenu", preventCtx);
-        window.addEventListener("resize", onResize);
-
-        const dolly = (delta) => {
-          s.cameraPos.add(new THREE.Vector3(
-            -Math.sin(s.yaw) * Math.cos(s.pitch),
-            -Math.sin(s.pitch),
-            -Math.cos(s.yaw) * Math.cos(s.pitch)
-          ).multiplyScalar(delta));
-          updateCamera();
-        };
         const onWheel = (e) => {
           e.preventDefault();
-          dolly(-e.deltaY * 0.02);
+          cameraDistance = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, cameraDistance + e.deltaY * 0.01));
         };
-        let pinchStartDist = 0;
+        let pinchStartDist = 0, pinchStartCamera = cameraDistance;
         const touchDist = (e) => {
           const dx = e.touches[0].clientX - e.touches[1].clientX;
           const dy = e.touches[0].clientY - e.touches[1].clientY;
           return Math.hypot(dx, dy);
         };
         const onTouchStart = (e) => {
-          if (e.touches.length === 2) pinchStartDist = touchDist(e);
+          if (e.touches.length === 2) {
+            pinchStartDist = touchDist(e);
+            pinchStartCamera = cameraDistance;
+          }
         };
         const onTouchMove = (e) => {
           if (e.touches.length === 2 && pinchStartDist > 0) {
             e.preventDefault();
-            const d = touchDist(e);
-            dolly((d - pinchStartDist) * 0.05);
-            pinchStartDist = d;
+            const ratio = pinchStartDist / touchDist(e);
+            cameraDistance = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartCamera * ratio));
           }
         };
         const onTouchEnd = (e) => { if (e.touches.length < 2) pinchStartDist = 0; };
-        canvas.addEventListener("wheel", onWheel, { passive: false });
-        canvas.addEventListener("touchstart", onTouchStart, { passive: false });
-        canvas.addEventListener("touchmove", onTouchMove, { passive: false });
-        canvas.addEventListener("touchend", onTouchEnd);
-        canvas.addEventListener("touchcancel", onTouchEnd);
-
-        s.resetCamera = () => {
-          s.yaw = 0.5;
-          s.pitch = 0.8;
-          s.cameraPos.set(
-            15 * Math.sin(0.5) * Math.cos(0.8),
-            15 * Math.sin(0.8),
-            15 * Math.cos(0.5) * Math.cos(0.8)
-          );
-          updateCamera();
-        };
+        container.addEventListener("wheel", onWheel, { passive: false });
+        container.addEventListener("touchstart", onTouchStart, { passive: false });
+        container.addEventListener("touchmove", onTouchMove, { passive: false });
+        container.addEventListener("touchend", onTouchEnd);
+        container.addEventListener("touchcancel", onTouchEnd);
 
         function animate() {
-          s.animFrameId = requestAnimationFrame(animate);
-          checkHold();
-          s.renderer.render(s.scene, s.camera);
+          animId = requestAnimationFrame(animate);
+          updateMovement();
+          setCoords({ x: player.position.x, y: player.position.y, z: player.position.z });
+          renderer.render(scene, camera);
         }
         animate();
 
-        return () => {
-          cancelAnimationFrame(s.animFrameId);
-          canvas.removeEventListener("mousemove", onMouseMove);
-          canvas.removeEventListener("mousedown", onMouseDown);
-          canvas.removeEventListener("mouseup",   onMouseUp);
-          canvas.removeEventListener("contextmenu", preventCtx);
-          canvas.removeEventListener("wheel", onWheel);
-          canvas.removeEventListener("touchstart", onTouchStart);
-          canvas.removeEventListener("touchmove", onTouchMove);
-          canvas.removeEventListener("touchend", onTouchEnd);
-          canvas.removeEventListener("touchcancel", onTouchEnd);
-          window.removeEventListener("resize", onResize);
-          s.renderer.dispose();
-          if (mount.contains(s.renderer.domElement)) mount.removeChild(s.renderer.domElement);
+        return {
+          camera,
+          destroy() {
+            cancelAnimationFrame(animId);
+            window.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("keyup", onKeyUp);
+            container.removeEventListener("wheel", onWheel);
+            container.removeEventListener("touchstart", onTouchStart);
+            container.removeEventListener("touchmove", onTouchMove);
+            container.removeEventListener("touchend", onTouchEnd);
+            container.removeEventListener("touchcancel", onTouchEnd);
+            walkSound.pause();
+          },
         };
+      }
 
-        function preventCtx(e) { e.preventDefault(); }
+      /* ─────────────────────────── TEST MODE COMPONENT ─────────────────────────── */
 
-        function lookDir() {
-          return new THREE.Vector3(
-            -Math.sin(s.yaw) * Math.cos(s.pitch),
-            -Math.sin(s.pitch),
-            -Math.cos(s.yaw) * Math.cos(s.pitch)
-          );
-        }
+      function TestMode({ blocks, onExit }) {
+        const mountRef = useRef(null);
+        const [coords, setCoords] = useState({ x: 0, y: 0, z: 0 });
 
-        function updateCamera() {
-          const { camera, cameraPos } = s;
-          if (!camera) return;
-          camera.position.copy(cameraPos);
-          camera.lookAt(cameraPos.clone().add(lookDir()));
-        }
+        useEffect(() => {
+          const mount = mountRef.current;
+          if (!mount) return;
 
-        function getSnappedPos(hit) {
-          const normal = hit.face.normal;
-          const pos = new THREE.Vector3()
-            .copy(hit.point)
-            .add(new THREE.Vector3(
-              normal.x * (BLOCK_SIZE.x / 2),
-              normal.y * (BLOCK_SIZE.y / 2),
-              normal.z * (BLOCK_SIZE.z / 2)
-            ));
-          return new THREE.Vector3(
-            Math.floor(pos.x / BLOCK_SIZE.x) * BLOCK_SIZE.x + BLOCK_SIZE.x / 2,
-            Math.max(BLOCK_SIZE.y / 2, Math.floor(pos.y / BLOCK_SIZE.y) * BLOCK_SIZE.y + BLOCK_SIZE.y / 2),
-            Math.floor(pos.z / BLOCK_SIZE.z) * BLOCK_SIZE.z + BLOCK_SIZE.z / 2
-          );
-        }
+          let renderer;
+          try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+          catch { return; }
 
-        function createBlock(position, texIndex, shape, sensorKind) {
-          const isSphere = shape === "sphere";
-          const geometry = isSphere
-            ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
-            : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-          let material;
-          if (isSphere) {
-            const c = SENSOR_COLORS[sensorKind || "kill"];
-            material = new THREE.MeshStandardMaterial({
-              color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
-            });
-          } else {
-            material = new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
-          }
-          const block = new THREE.Mesh(geometry, material);
-          block.position.copy(position);
-          block.userData.texIndex = texIndex;
-          block.userData.shape = shape;
-          if (isSphere) block.userData.sensorKind = sensorKind || "kill";
-          s.scene.add(block);
-          s.objects.push(block);
-          s.blocks.push(block);
-        }
+          renderer.setSize(mount.clientWidth, mount.clientHeight);
+          renderer.setPixelRatio(window.devicePixelRatio);
+          mount.appendChild(renderer.domElement);
 
-        function onMouseMove(e) {
-          const rect = canvas.getBoundingClientRect();
-          s.mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-          s.mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+          const engine = createEngine(renderer, mount, blocks, setCoords);
 
-          s.raycaster.setFromCamera(s.mouse, s.camera);
-          const targets = s.isMovingBlock && s.selectedBlock
-            ? s.objects.filter((o) => o !== s.selectedBlock)
-            : s.objects;
-          const hits = s.raycaster.intersectObjects(targets);
+          const onResize = () => {
+            engine.camera.aspect = mount.clientWidth / mount.clientHeight;
+            engine.camera.updateProjectionMatrix();
+            renderer.setSize(mount.clientWidth, mount.clientHeight);
+          };
+          window.addEventListener("resize", onResize);
 
-          if (hits.length > 0) {
-            const snapped = getSnappedPos(hits[0]);
-            if (s.isMovingBlock && s.selectedBlock) {
-              s.selectedBlock.position.copy(snapped);
-              s.ghostBlock.visible = false;
-            } else {
-              s.ghostBlock.visible = true;
-              s.ghostBlock.position.copy(snapped);
-            }
-          } else {
-            s.ghostBlock.visible = false;
-          }
+          return () => {
+            engine.destroy();
+            renderer.dispose();
+            if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+            window.removeEventListener("resize", onResize);
+          };
+        }, []);
 
-          if (s.isDraggingCamera) {
-            s.yaw   -= (e.clientX - s.previousMousePosition.x) * 0.005;
-            s.pitch += (e.clientY - s.previousMousePosition.y) * 0.005;
-            s.pitch  = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, s.pitch));
-            updateCamera();
-          }
-          s.previousMousePosition = { x: e.clientX, y: e.clientY };
-        }
+        return (
+          <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative" }}>
+            <div
+              ref={mountRef}
+              style={{
+                width: "100%", height: "100%",
+                background:
+                  "url('https://raw.githubusercontent.com/Maideo-Studio/textures/f62722361238fc9d7e629114c85ebc089e061398/placidplace-space-14958%20(1).gif') center/400%",
+              }}
+            />
+            <div style={{
+              position: "absolute", top: 10, left: 10, color: "white", fontSize: 14,
+              background: "rgba(0,0,0,0.5)", padding: "6px 10px", borderRadius: 6,
+              zIndex: 3000, fontFamily: "monospace",
+            }}>
+              X: {coords.x.toFixed(2)} &nbsp; Y: {coords.y.toFixed(2)} &nbsp; Z: {coords.z.toFixed(2)}
+            </div>
+            <div style={{
+              position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
+              color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "sans-serif",
+              background: "rgba(0,0,0,0.4)", padding: "5px 12px", borderRadius: 6,
+              zIndex: 3000, whiteSpace: "nowrap",
+            }}>
+              WASD: move &nbsp;|&nbsp; Space: jump &nbsp;|&nbsp; Q/E: rotate camera
+            </div>
+            <button onClick={onExit} style={{
+              position: "absolute", top: 10, right: 10, zIndex: 3000,
+              padding: "10px 18px", background: "#ef4444", color: "white",
+              border: "none", borderRadius: 6, cursor: "pointer",
+              fontWeight: "bold", fontFamily: "sans-serif", fontSize: 14,
+            }}>
+              ✕ Stop Test
+            </button>
+          </div>
+        );
+      }
 
-        function onMouseDown(e) {
-          e.preventDefault();
-          s.mouseDownTime    = Date.now();
-          s.startMousePos    = { x: e.clientX, y: e.clientY };
-          s.previousMousePosition = { x: e.clientX, y: e.clientY };
+      /* ─────────────────────────── BUILDER COMPONENT ─────────────────────────── */
 
-          if (e.button === 0) {
-            s.raycaster.setFromCamera(s.mouse, s.camera);
-            const hits = s.raycaster.intersectObjects(s.objects);
-            if (e.shiftKey) {
-              if (hits.length > 0 && hits[0].object !== s.ground) {
-                const m = hits[0].object;
-                s.scaleSelection = m;
-                setSelectedScale({ x: m.scale.x, y: m.scale.y, z: m.scale.z });
-              } else {
-                s.scaleSelection = null;
-                setSelectedScale(null);
-              }
-              return;
-            }
-            if (hits.length > 0 && hits[0].object !== s.ground) {
-              s.selectedBlock = hits[0].object;
-            } else {
-              s.isDraggingCamera = true;
-            }
-          }
-        }
+      function Game() {
+        const mountRef = useRef(null);
+        const activeSlotRef = useRef(0);
+        const activeSensorSlotRef = useRef(0);
+        const modeRef = useRef("build");
+        const [activeSlot, setActiveSlot] = useState(0);
+        const [activeSensorSlot, setActiveSensorSlot] = useState(0);
+        const [mode, setMode] = useState("build");
+        const [testBlocks, setTestBlocks] = useState(null);
+        const [selectedScale, setSelectedScale] = useState(null);
+        const [selectedScript, setSelectedScript] = useState(null);
 
-        function onMouseUp(e) {
-          if (e.button === 0) {
-            const moveDist    = Math.hypot(e.clientX - s.startMousePos.x, e.clientY - s.startMousePos.y);
-            const clickDuration = Date.now() - s.mouseDownTime;
+        const stateRef = useRef({
+          scene: null, camera: null, renderer: null,
+          raycaster: new THREE.Raycaster(),
+          mouse: new THREE.Vector2(),
+          ground: null, ghostBlock: null,
+          selectedBlock: null, scaleSelection: null, scriptSelection: null,
+          shiftDown: false,
+          objects: [], blocks: [], blockTextures: [],
+          isDraggingCamera: false, mouseDownTime: 0, isMovingBlock: false,
+          startMousePos: { x: 0, y: 0 }, previousMousePosition: { x: 0, y: 0 },
+          yaw: 0.5, pitch: 0.8, radius: 15, animFrameId: 0,
+          cameraPos: new THREE.Vector3(
+            15 * Math.sin(0.5) * Math.cos(0.8),
+            15 * Math.sin(0.8),
+            15 * Math.cos(0.5) * Math.cos(0.8),
+          ),
+          resetCamera: null,
+        });
 
-            if (moveDist < 5 && clickDuration < 250) {
-              if (s.isMovingBlock) {
-                s.isMovingBlock = false;
-                s.selectedBlock = null;
-              } else if (s.ghostBlock.visible) {
-                const isSensor = modeRef.current === "sensors";
-                createBlock(
-                  s.ghostBlock.position.clone(),
-                  activeSlotRef.current,
-                  isSensor ? "sphere" : "block",
-                  isSensor ? SENSOR_KINDS[activeSensorSlotRef.current] : undefined
-                );
-              }
-            }
+        const resetCameraView = () =>
+          stateRef.current.resetCamera && stateRef.current.resetCamera();
 
-            s.isDraggingCamera = false;
-            s.isMovingBlock    = false;
-            s.selectedBlock    = null;
+        useEffect(() => {
+          const mount = mountRef.current;
+          if (!mount) return;
+          const s = stateRef.current;
+
+          s.scene = new THREE.Scene();
+          s.scene.background = new THREE.Color(0xffffff);
+
+          s.camera = new THREE.PerspectiveCamera(45, mount.clientWidth / mount.clientHeight, 0.1, 1000);
+
+          try { s.renderer = new THREE.WebGLRenderer({ antialias: true }); }
+          catch {
+            const msg = document.createElement("div");
+            msg.style.cssText =
+              "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-size:18px;background:#111827;text-align:center;padding:20px;";
+            msg.textContent = "WebGL is not available in this environment. Please open the app in a modern browser to play Dynaverse.";
+            mount.appendChild(msg);
+            return;
           }
 
-          if (e.button === 2) {
-            s.raycaster.setFromCamera(s.mouse, s.camera);
-            const hits = s.raycaster.intersectObjects(s.objects);
-            if (hits.length > 0 && hits[0].object !== s.ground) {
-              const obj = hits[0].object;
-              if (s.scaleSelection === obj) {
-                s.scaleSelection = null;
-                setSelectedScale(null);
-              }
-              s.scene.remove(obj);
-              s.objects = s.objects.filter((o) => o !== obj);
-              s.blocks  = s.blocks.filter((o) => o !== obj);
-            }
-          }
-        }
-
-        function checkHold() {
-          if (s.selectedBlock && !s.isMovingBlock && !s.isDraggingCamera) {
-            if (Date.now() - s.mouseDownTime > 200) s.isMovingBlock = true;
-          }
-        }
-
-        function onResize() {
-          if (!mount || !s.camera || !s.renderer) return;
-          s.camera.aspect = mount.clientWidth / mount.clientHeight;
-          s.camera.updateProjectionMatrix();
           s.renderer.setSize(mount.clientWidth, mount.clientHeight);
-        }
-      }, []);
+          s.renderer.setPixelRatio(window.devicePixelRatio);
+          mount.appendChild(s.renderer.domElement);
 
-      // Update ghost block geometry/material when mode or sensor selection changes
-      useEffect(() => {
-        const s = stateRef.current;
-        if (!s.ghostBlock) return;
-        s.ghostBlock.geometry.dispose();
-        s.ghostBlock.geometry = mode === "sensors"
-          ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
-          : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-        if (mode === "sensors") {
-          s.ghostBlock.material.color.setHex(SENSOR_COLORS[SENSOR_KINDS[activeSensorSlot]].color);
-        } else {
-          s.ghostBlock.material.color.setHex(0x60a5fa);
-        }
-      }, [mode, activeSensorSlot]);
-
-      function handleSetTexture(i) {
-        activeSlotRef.current = i;
-        setActiveSlot(i);
-      }
-
-      function handleSetSensor(i) {
-        activeSensorSlotRef.current = i;
-        setActiveSensorSlot(i);
-      }
-
-      function toggleMode() {
-        const next = mode === "build" ? "sensors" : "build";
-        modeRef.current = next;
-        setMode(next);
-      }
-
-      function enterTest() {
-        const s = stateRef.current;
-        setTestBlocks(s.blocks.map((b) => ({
-          pos: { x: b.position.x, y: b.position.y, z: b.position.z },
-          texIndex: b.userData.texIndex,
-          shape: b.userData.shape || "block",
-          sensorKind: b.userData.sensorKind,
-          scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
-        })));
-      }
-
-      function exitTest() { setTestBlocks(null); }
-
-      function saveWorld() {
-        const s    = stateRef.current;
-        const data = s.blocks.map((b) => ({
-          pos: { x: b.position.x, y: b.position.y, z: b.position.z },
-          texIndex: b.userData.texIndex,
-          shape: b.userData.shape || "block",
-          sensorKind: b.userData.sensorKind,
-          scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
-        }));
-        const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-        const url  = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href     = url;
-        link.download = "world.json";
-        link.click();
-        URL.revokeObjectURL(url);
-      }
-
-      function loadWorld(e) {
-        const file = e.target.files && e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const s    = stateRef.current;
-          const data = JSON.parse(ev.target.result);
-          s.blocks.forEach((b) => {
-            s.scene.remove(b);
-            s.objects = s.objects.filter((o) => o !== b);
+          const loader = new THREE.TextureLoader();
+          TEXTURE_URLS.forEach((url, i) => {
+            const tex = loader.load(url);
+            tex.magFilter = THREE.NearestFilter;
+            tex.minFilter = THREE.NearestFilter;
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(4, 2);
+            s.blockTextures[i] = tex;
           });
-          s.blocks = [];
-          data.forEach((item) => {
-            const shape = item.shape || "block";
+
+          const groundTex = loader.load(TEXTURE_URLS[0]);
+          groundTex.magFilter = THREE.NearestFilter;
+          groundTex.minFilter = THREE.NearestFilter;
+          groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
+          groundTex.repeat.set(73, 70);
+
+          s.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+          const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+          dirLight.position.set(10, 20, 10);
+          s.scene.add(dirLight);
+
+          const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(20, 20),
+            new THREE.MeshStandardMaterial({ map: groundTex }),
+          );
+          ground.rotation.x = -Math.PI / 2;
+          s.scene.add(ground);
+          s.objects.push(ground);
+          s.ground = ground;
+
+          const ghost = new THREE.Mesh(
+            new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z),
+            new THREE.MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.4 }),
+          );
+          s.scene.add(ghost);
+          s.ghostBlock = ghost;
+
+          updateCamera();
+
+          const canvas = s.renderer.domElement;
+          canvas.addEventListener("mousemove", onMouseMove);
+          canvas.addEventListener("mousedown", onMouseDown);
+          canvas.addEventListener("mouseup", onMouseUp);
+          canvas.addEventListener("contextmenu", preventCtx);
+          window.addEventListener("resize", onResize);
+
+          const onKeyDown = (e) => { if (e.key === "Shift") s.shiftDown = true; };
+          const onKeyUp = (e) => { if (e.key === "Shift") s.shiftDown = false; };
+          window.addEventListener("keydown", onKeyDown);
+          window.addEventListener("keyup", onKeyUp);
+          const onBlur = () => { s.shiftDown = false; };
+          window.addEventListener("blur", onBlur);
+
+          const dolly = (delta) => {
+            s.cameraPos.add(
+              new THREE.Vector3(
+                -Math.sin(s.yaw) * Math.cos(s.pitch),
+                -Math.sin(s.pitch),
+                -Math.cos(s.yaw) * Math.cos(s.pitch),
+              ).multiplyScalar(delta),
+            );
+            updateCamera();
+          };
+          const onWheel = (e) => { e.preventDefault(); dolly(-e.deltaY * 0.02); };
+          let pinchStartDist = 0;
+          const touchDist = (e) => {
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            return Math.hypot(dx, dy);
+          };
+          const onTouchStart = (e) => { if (e.touches.length === 2) pinchStartDist = touchDist(e); };
+          const onTouchMove = (e) => {
+            if (e.touches.length === 2 && pinchStartDist > 0) {
+              e.preventDefault();
+              const d = touchDist(e);
+              dolly((d - pinchStartDist) * 0.05);
+              pinchStartDist = d;
+            }
+          };
+          const onTouchEnd = (e) => { if (e.touches.length < 2) pinchStartDist = 0; };
+          canvas.addEventListener("wheel", onWheel, { passive: false });
+          canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+          canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+          canvas.addEventListener("touchend", onTouchEnd);
+          canvas.addEventListener("touchcancel", onTouchEnd);
+
+          s.resetCamera = () => {
+            s.yaw = 0.5;
+            s.pitch = 0.8;
+            s.cameraPos.set(
+              15 * Math.sin(0.5) * Math.cos(0.8),
+              15 * Math.sin(0.8),
+              15 * Math.cos(0.5) * Math.cos(0.8),
+            );
+            updateCamera();
+          };
+
+          function animate() {
+            s.animFrameId = requestAnimationFrame(animate);
+            checkHold();
+            if (s.scene && s.camera && s.renderer) s.renderer.render(s.scene, s.camera);
+          }
+          animate();
+
+          return () => {
+            cancelAnimationFrame(s.animFrameId);
+            canvas.removeEventListener("mousemove", onMouseMove);
+            canvas.removeEventListener("mousedown", onMouseDown);
+            canvas.removeEventListener("mouseup", onMouseUp);
+            canvas.removeEventListener("contextmenu", preventCtx);
+            canvas.removeEventListener("wheel", onWheel);
+            canvas.removeEventListener("touchstart", onTouchStart);
+            canvas.removeEventListener("touchmove", onTouchMove);
+            canvas.removeEventListener("touchend", onTouchEnd);
+            canvas.removeEventListener("touchcancel", onTouchEnd);
+            window.removeEventListener("resize", onResize);
+            window.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("keyup", onKeyUp);
+            window.removeEventListener("blur", onBlur);
+            s.renderer && s.renderer.dispose();
+            if (s.renderer && mount.contains(s.renderer.domElement))
+              mount.removeChild(s.renderer.domElement);
+          };
+
+          function preventCtx(e) { e.preventDefault(); }
+
+          function lookDir() {
+            return new THREE.Vector3(
+              -Math.sin(s.yaw) * Math.cos(s.pitch),
+              -Math.sin(s.pitch),
+              -Math.cos(s.yaw) * Math.cos(s.pitch),
+            );
+          }
+
+          function updateCamera() {
+            const { camera, cameraPos } = s;
+            if (!camera) return;
+            camera.position.copy(cameraPos);
+            camera.lookAt(cameraPos.clone().add(lookDir()));
+          }
+
+          function getSnappedPos(hit) {
+            const normal = hit.face.normal;
+            const pos = new THREE.Vector3()
+              .copy(hit.point)
+              .add(new THREE.Vector3(
+                normal.x * (BLOCK_SIZE.x / 2),
+                normal.y * (BLOCK_SIZE.y / 2),
+                normal.z * (BLOCK_SIZE.z / 2),
+              ));
+            return new THREE.Vector3(
+              Math.floor(pos.x / BLOCK_SIZE.x) * BLOCK_SIZE.x + BLOCK_SIZE.x / 2,
+              Math.max(
+                BLOCK_SIZE.y / 2,
+                Math.floor(pos.y / BLOCK_SIZE.y) * BLOCK_SIZE.y + BLOCK_SIZE.y / 2,
+              ),
+              Math.floor(pos.z / BLOCK_SIZE.z) * BLOCK_SIZE.z + BLOCK_SIZE.z / 2,
+            );
+          }
+
+          function createBlock(position, texIndex, shape, sensorKind) {
             const isSphere = shape === "sphere";
-            const sensorKind = item.sensorKind || "kill";
             const geometry = isSphere
               ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
               : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
             let material;
             if (isSphere) {
-              const c = SENSOR_COLORS[sensorKind];
+              const c = SENSOR_COLORS[sensorKind || "kill"];
               material = new THREE.MeshStandardMaterial({
                 color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
               });
             } else {
-              material = new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+              material = new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
             }
             const block = new THREE.Mesh(geometry, material);
-            block.position.set(item.pos.x, item.pos.y, item.pos.z);
-            block.userData.texIndex = item.texIndex;
+            block.position.copy(position);
+            block.userData.texIndex = texIndex;
             block.userData.shape = shape;
-            if (isSphere) block.userData.sensorKind = sensorKind;
-            if (item.scale) block.scale.set(item.scale.x, item.scale.y, item.scale.z);
+            block.userData.script = { ...DEFAULT_SCRIPT };
+            if (isSphere) block.userData.sensorKind = sensorKind || "kill";
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
-          });
+          }
+
+          function onMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            s.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            s.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            s.raycaster.setFromCamera(s.mouse, s.camera);
+            const targets =
+              s.isMovingBlock && s.selectedBlock
+                ? s.objects.filter((o) => o !== s.selectedBlock)
+                : s.objects;
+            const hits = s.raycaster.intersectObjects(targets);
+
+            if (hits.length > 0) {
+              const snapped = getSnappedPos(hits[0]);
+              if (s.isMovingBlock && s.selectedBlock) {
+                s.selectedBlock.position.copy(snapped);
+                s.ghostBlock.visible = false;
+              } else if (s.shiftDown) {
+                s.ghostBlock.visible = false;
+              } else {
+                s.ghostBlock.visible = true;
+                s.ghostBlock.position.copy(snapped);
+              }
+            } else {
+              s.ghostBlock.visible = false;
+            }
+
+            // Shift+hover opens the scale + script panels for the hovered cube block
+            if (s.shiftDown && hits.length > 0 && hits[0].object !== s.ground) {
+              const m = hits[0].object;
+              if (s.scaleSelection !== m) {
+                s.scaleSelection = m;
+                setSelectedScale({ x: m.scale.x, y: m.scale.y, z: m.scale.z });
+              }
+              if (m.userData.shape !== "sphere" && s.scriptSelection !== m) {
+                s.scriptSelection = m;
+                const sc = m.userData.script || { ...DEFAULT_SCRIPT };
+                m.userData.script = sc;
+                setSelectedScript({ ...sc });
+              }
+            }
+
+            if (s.isDraggingCamera) {
+              s.yaw -= (e.clientX - s.previousMousePosition.x) * 0.005;
+              s.pitch += (e.clientY - s.previousMousePosition.y) * 0.005;
+              s.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, s.pitch));
+              updateCamera();
+            }
+            s.previousMousePosition = { x: e.clientX, y: e.clientY };
+          }
+
+          function onMouseDown(e) {
+            e.preventDefault();
+            s.mouseDownTime = Date.now();
+            s.startMousePos = { x: e.clientX, y: e.clientY };
+            s.previousMousePosition = { x: e.clientX, y: e.clientY };
+
+            if (e.button === 0) {
+              s.raycaster.setFromCamera(s.mouse, s.camera);
+              const hits = s.raycaster.intersectObjects(s.objects);
+              if (e.shiftKey) {
+                if (hits.length > 0 && hits[0].object !== s.ground) {
+                  const m = hits[0].object;
+                  s.scaleSelection = m;
+                  setSelectedScale({ x: m.scale.x, y: m.scale.y, z: m.scale.z });
+                } else {
+                  s.scaleSelection = null;
+                  setSelectedScale(null);
+                }
+                return;
+              }
+              if (hits.length > 0 && hits[0].object !== s.ground) {
+                s.selectedBlock = hits[0].object;
+              } else {
+                s.isDraggingCamera = true;
+              }
+            }
+          }
+
+          function onMouseUp(e) {
+            if (e.button === 0) {
+              const moveDist = Math.hypot(e.clientX - s.startMousePos.x, e.clientY - s.startMousePos.y);
+              const clickDuration = Date.now() - s.mouseDownTime;
+
+              if (moveDist < 5 && clickDuration < 250) {
+                if (s.isMovingBlock) {
+                  s.isMovingBlock = false;
+                  s.selectedBlock = null;
+                } else if (s.ghostBlock.visible) {
+                  const isSensor = modeRef.current === "sensors";
+                  createBlock(
+                    s.ghostBlock.position.clone(),
+                    activeSlotRef.current,
+                    isSensor ? "sphere" : "block",
+                    isSensor ? SENSOR_KINDS[activeSensorSlotRef.current] : undefined,
+                  );
+                }
+              }
+
+              s.isDraggingCamera = false;
+              s.isMovingBlock = false;
+              s.selectedBlock = null;
+            }
+
+            if (e.button === 2) {
+              s.raycaster.setFromCamera(s.mouse, s.camera);
+              const hits = s.raycaster.intersectObjects(s.objects);
+              if (hits.length > 0 && hits[0].object !== s.ground) {
+                const obj = hits[0].object;
+                if (s.scaleSelection === obj) { s.scaleSelection = null; setSelectedScale(null); }
+                if (s.scriptSelection === obj) { s.scriptSelection = null; setSelectedScript(null); }
+                s.scene.remove(obj);
+                s.objects = s.objects.filter((o) => o !== obj);
+                s.blocks = s.blocks.filter((o) => o !== obj);
+              }
+            }
+          }
+
+          function checkHold() {
+            if (s.selectedBlock && !s.isMovingBlock && !s.isDraggingCamera) {
+              if (Date.now() - s.mouseDownTime > 200) s.isMovingBlock = true;
+            }
+          }
+
+          function onResize() {
+            if (!mount || !s.camera || !s.renderer) return;
+            s.camera.aspect = mount.clientWidth / mount.clientHeight;
+            s.camera.updateProjectionMatrix();
+            s.renderer.setSize(mount.clientWidth, mount.clientHeight);
+          }
+        }, []);
+
+        useEffect(() => {
+          const s = stateRef.current;
+          if (!s.ghostBlock) return;
+          s.ghostBlock.geometry.dispose();
+          s.ghostBlock.geometry =
+            mode === "sensors"
+              ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
+              : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+          const mat = s.ghostBlock.material;
+          if (mode === "sensors") {
+            mat.color.setHex(SENSOR_COLORS[SENSOR_KINDS[activeSensorSlot]].color);
+          } else {
+            mat.color.setHex(0x60a5fa);
+          }
+        }, [mode, activeSensorSlot]);
+
+        function handleSetTexture(i) { activeSlotRef.current = i; setActiveSlot(i); }
+        function handleSetSensor(i) { activeSensorSlotRef.current = i; setActiveSensorSlot(i); }
+        function toggleMode() {
+          const next = mode === "build" ? "sensors" : "build";
+          modeRef.current = next;
+          setMode(next);
+        }
+
+        function enterTest() {
+          const s = stateRef.current;
+          setTestBlocks(s.blocks.map((b) => ({
+            pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+            texIndex: b.userData.texIndex ?? 0,
+            shape: b.userData.shape || "block",
+            sensorKind: b.userData.sensorKind,
+            scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
+            script: b.userData.script ?? { ...DEFAULT_SCRIPT },
+          })));
+        }
+        function exitTest() { setTestBlocks(null); }
+
+        function saveWorld() {
+          const s = stateRef.current;
+          const data = s.blocks.map((b) => ({
+            pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+            texIndex: b.userData.texIndex ?? 0,
+            shape: b.userData.shape || "block",
+            sensorKind: b.userData.sensorKind,
+            scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
+            script: b.userData.script ?? { ...DEFAULT_SCRIPT },
+          }));
+          const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url; link.download = "world.json"; link.click();
+          URL.revokeObjectURL(url);
+        }
+
+        function loadWorld(e) {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const s = stateRef.current;
+            const data = JSON.parse(ev.target.result);
+            s.blocks.forEach((b) => {
+              s.scene.remove(b);
+              s.objects = s.objects.filter((o) => o !== b);
+            });
+            s.blocks = [];
+            data.forEach((item) => {
+              const shape = item.shape || "block";
+              const isSphere = shape === "sphere";
+              const sensorKind = item.sensorKind || "kill";
+              const geometry = isSphere
+                ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
+                : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+              let material;
+              if (isSphere) {
+                const c = SENSOR_COLORS[sensorKind];
+                material = new THREE.MeshStandardMaterial({
+                  color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
+                });
+              } else {
+                material = new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+              }
+              const block = new THREE.Mesh(geometry, material);
+              block.position.set(item.pos.x, item.pos.y, item.pos.z);
+              block.userData.texIndex = item.texIndex;
+              block.userData.shape = shape;
+              block.userData.script = item.script ?? { ...DEFAULT_SCRIPT };
+              if (isSphere) block.userData.sensorKind = sensorKind;
+              if (item.scale) block.scale.set(item.scale.x, item.scale.y, item.scale.z);
+              s.scene.add(block);
+              s.objects.push(block);
+              s.blocks.push(block);
+            });
+          };
+          reader.readAsText(file);
+          e.target.value = "";
+        }
+
+        function updateScript(next) {
+          setSelectedScript(next);
+          const sel = stateRef.current.scriptSelection;
+          if (sel) sel.userData.script = next;
+        }
+
+        function closeScriptPanel() {
+          stateRef.current.scriptSelection = null;
+          setSelectedScript(null);
+        }
+
+        const RETRO_FONT = '"Verdana","Geneva","Tahoma",sans-serif';
+        const retroFlatBtn = {
+          background: "linear-gradient(180deg,#e5e5e5 0%,#a3a3a3 50%,#525252 100%)",
+          color: "#000", border: "2px solid",
+          borderTopColor: "#fff", borderLeftColor: "#fff",
+          borderRightColor: "#1a1a1a", borderBottomColor: "#1a1a1a",
+          borderRadius: 0, cursor: "pointer", fontSize: 11, fontWeight: "bold",
+          fontFamily: '"Verdana","Tahoma",sans-serif',
+          textTransform: "uppercase", letterSpacing: 1,
         };
-        reader.readAsText(file);
-        e.target.value = "";
-      }
+        const retroToolbarBtn = (light, mid, dark, hi) => ({
+          padding: "8px 14px",
+          background: `linear-gradient(180deg,${light} 0%,${mid} 50%,${dark} 100%)`,
+          color: "white", border: "2px solid",
+          borderTopColor: hi, borderLeftColor: hi,
+          borderRightColor: "#1a1a1a", borderBottomColor: "#1a1a1a",
+          borderRadius: 0, cursor: "pointer",
+          fontWeight: "bold", fontFamily: RETRO_FONT, fontSize: 12,
+          letterSpacing: 1, textTransform: "uppercase",
+          textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+          boxShadow: "2px 2px 0 rgba(0,0,0,0.5)",
+        });
 
-      const slotStyle = (i) => ({
-        width: 60, height: 60,
-        border: activeSlot === i ? "2px solid #60a5fa" : "2px solid #555",
-        boxShadow: activeSlot === i ? "0 0 10px #60a5fa" : "none",
-        background: "rgba(0,0,0,0.6)", color: "white",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        cursor: "pointer", userSelect: "none",
-        fontFamily: "sans-serif", fontWeight: "bold", fontSize: 20,
-        transition: "border-color 0.15s, box-shadow 0.15s",
-        borderRadius: 4,
-      });
-
-      const sensorSlotStyle = (i) => {
-        const kind   = SENSOR_KINDS[i];
-        const c      = SENSOR_COLORS[kind];
-        const hex    = "#" + c.color.toString(16).padStart(6, "0");
-        const active = activeSensorSlot === i;
-        return {
-          width: 60, height: 60,
-          border: active ? `2px solid ${hex}` : "2px solid #555",
-          boxShadow: active ? `0 0 14px ${hex}` : "none",
-          background: hex, color: "white",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", userSelect: "none",
-          fontFamily: "sans-serif", fontWeight: "bold", fontSize: 12,
-          letterSpacing: 0.5, textShadow: "1px 1px 2px rgba(0,0,0,0.6)",
-          transition: "border-color 0.15s, box-shadow 0.15s",
-          borderRadius: "50%",
+        const slotStyle = (i) => {
+          const active = activeSlot === i;
+          return {
+            width: 56, height: 56,
+            border: "3px solid",
+            borderTopColor: active ? "#1a1a1a" : "#dcdcdc",
+            borderLeftColor: active ? "#1a1a1a" : "#dcdcdc",
+            borderRightColor: active ? "#dcdcdc" : "#1a1a1a",
+            borderBottomColor: active ? "#dcdcdc" : "#1a1a1a",
+            background: active
+              ? "linear-gradient(180deg,#3b82f6 0%,#1d4ed8 100%)"
+              : "linear-gradient(180deg,#a8a8a8 0%,#7d7d7d 100%)",
+            color: "white",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", userSelect: "none",
+            fontFamily: RETRO_FONT, fontWeight: "bold", fontSize: 22,
+            textShadow: "2px 2px 0 rgba(0,0,0,0.6)",
+            borderRadius: 0,
+            boxShadow: "2px 2px 0 rgba(0,0,0,0.4)",
+          };
         };
-      };
 
-      return (
-        <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative", background: "#111827" }}>
+        const sensorSlotStyle = (i) => {
+          const kind = SENSOR_KINDS[i];
+          const c = SENSOR_COLORS[kind];
+          const hex = "#" + c.color.toString(16).padStart(6, "0");
+          const active = activeSensorSlot === i;
+          return {
+            width: 56, height: 56,
+            border: "3px solid",
+            borderTopColor: active ? "#1a1a1a" : "#dcdcdc",
+            borderLeftColor: active ? "#1a1a1a" : "#dcdcdc",
+            borderRightColor: active ? "#dcdcdc" : "#1a1a1a",
+            borderBottomColor: active ? "#dcdcdc" : "#1a1a1a",
+            background: hex, color: "white",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", userSelect: "none",
+            fontFamily: RETRO_FONT, fontWeight: "bold", fontSize: 11,
+            letterSpacing: 1, textTransform: "uppercase",
+            textShadow: "1px 1px 0 rgba(0,0,0,0.7)",
+            borderRadius: 0,
+            boxShadow: "2px 2px 0 rgba(0,0,0,0.4)",
+          };
+        };
 
-          {/* Builder — always mounted */}
-          <div style={{ display: testBlocks !== null ? "none" : "block", width: "100%", height: "100%" }}>
-            <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+        const showScripting = selectedScript !== null;
 
-            {/* Mode toggle (top-left) */}
-            <div style={{ position: "absolute", top: 10, left: 10, zIndex: 20 }}>
-              <button onClick={toggleMode} style={{
-                padding: "10px 18px",
-                background: mode === "sensors" ? "#a855f7" : "#f59e0b",
-                color: "white", border: "none", borderRadius: 5,
-                cursor: "pointer", fontWeight: "bold",
-                fontFamily: "sans-serif", fontSize: 14, minWidth: 110,
-                boxShadow: mode === "sensors"
-                  ? "0 0 12px rgba(168,85,247,0.6)"
-                  : "0 0 12px rgba(245,158,11,0.5)",
-                transition: "background 0.2s, box-shadow 0.2s",
-              }} title="Click to switch placement mode">
-                {mode === "sensors" ? "● Sensors" : "■ Build"}
-              </button>
-            </div>
+        return (
+          <div style={{ width: "100vw", height: "100vh", overflow: "hidden", position: "relative", background: "#111827" }}>
+            <div style={{ display: testBlocks !== null ? "none" : "block", width: "100%", height: "100%" }}>
+              <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
 
-            <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 10, zIndex: 20 }}>
-              <button onClick={enterTest} style={{
-                padding: "10px 18px", background: "#22c55e", color: "white",
-                border: "none", borderRadius: 5, cursor: "pointer",
-                fontWeight: "bold", fontFamily: "sans-serif", fontSize: 14,
-              }}>▶ Test</button>
+              <div style={{ position: "absolute", top: 10, left: 10, zIndex: 20 }}>
+                <button onClick={toggleMode} style={{
+                  ...(mode === "sensors"
+                    ? retroToolbarBtn("#c084fc","#a855f7","#7e22ce","#e9d5ff")
+                    : retroToolbarBtn("#fcd34d","#f59e0b","#b45309","#fde68a")),
+                  minWidth: 110,
+                }} title="Click to switch placement mode">
+                  {mode === "sensors" ? "● Sensors" : "■ Build"}
+                </button>
+              </div>
 
-              <button onClick={resetCameraView} style={{
-                padding: "10px 15px", background: "#f59e0b", color: "white",
-                border: "none", borderRadius: 5, cursor: "pointer",
-                fontWeight: "bold", fontFamily: "sans-serif",
-              }}>Reset Camera</button>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 8, zIndex: 20 }}>
+                <button onClick={enterTest}
+                  style={retroToolbarBtn("#86efac","#22c55e","#15803d","#bbf7d0")}>
+                  ▶ Test
+                </button>
+                <button onClick={resetCameraView}
+                  style={retroToolbarBtn("#fdba74","#f97316","#c2410c","#fed7aa")}>
+                  Reset Camera
+                </button>
+                <button onClick={saveWorld}
+                  style={retroToolbarBtn("#93c5fd","#3b82f6","#1e40af","#bfdbfe")}>
+                  Save World
+                </button>
+                <label style={{
+                  ...retroToolbarBtn("#93c5fd","#3b82f6","#1e40af","#bfdbfe"),
+                  userSelect: "none", display: "inline-block",
+                }}>
+                  Load World
+                  <input type="file" accept=".json" style={{ display: "none" }} onChange={loadWorld} />
+                </label>
+              </div>
 
-              <button onClick={saveWorld} style={{
-                padding: "10px 15px", background: "#3b82f6", color: "white",
-                border: "none", borderRadius: 5, cursor: "pointer",
-                fontWeight: "bold", fontFamily: "sans-serif",
-              }}>Save World</button>
-
-              <label style={{
-                padding: "10px 15px", background: "#3b82f6", color: "white",
-                borderRadius: 5, cursor: "pointer", fontWeight: "bold",
-                fontFamily: "sans-serif", userSelect: "none",
-              }}>
-                Load World
-                <input type="file" accept=".json" style={{ display: "none" }} onChange={loadWorld} />
-              </label>
-            </div>
-
-            <div style={{
-              position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
-              display: "flex", gap: 10, zIndex: 20,
-            }}>
-              {mode === "build"
-                ? [0, 1, 2, 3, 4].map((i) => (
-                    <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>{i + 1}</div>
-                  ))
-                : [0, 1, 2].map((i) => (
-                    <div
-                      key={i}
-                      style={sensorSlotStyle(i)}
-                      onClick={() => handleSetSensor(i)}
-                      title={SENSOR_LABELS[SENSOR_KINDS[i]]}
-                    >
-                      {SENSOR_LABELS[SENSOR_KINDS[i]]}
-                    </div>
-                  ))}
-            </div>
-
-            <div style={{
-              position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)",
-              color: "rgba(255,255,255,0.55)", fontSize: 11, fontFamily: "sans-serif",
-              textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap",
-            }}>
-              {mode === "sensors"
-                ? `Sensor mode — placing ${SENSOR_LABELS[SENSOR_KINDS[activeSensorSlot]]} sensor`
-                : "Build mode — placing blocks"}
-              &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Shift+click block: scale &nbsp;|&nbsp; Drag on ground: rotate camera
-            </div>
-
-            {selectedScale !== null && (
               <div style={{
-                position: "absolute", top: 80, right: 20,
-                background: "rgba(0,0,0,0.75)", border: "1px solid #60a5fa",
-                borderRadius: 6, padding: 12, color: "white",
-                fontFamily: "sans-serif", fontSize: 13, zIndex: 25, minWidth: 180,
+                position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
+                display: "flex", gap: 10, zIndex: 20,
               }}>
-                <div style={{ fontWeight: "bold", marginBottom: 8, color: "#60a5fa" }}>Scale Block</div>
-                {["x", "y", "z"].map((axis) => (
-                  <div key={axis} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <span style={{ width: 14, textTransform: "uppercase" }}>{axis}</span>
-                    <input
-                      type="range" min={0.25} max={5} step={0.25}
-                      value={selectedScale[axis]}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
+                {mode === "build"
+                  ? [0, 1, 2, 3, 4].map((i) => (
+                      <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>
+                        {i + 1}
+                      </div>
+                    ))
+                  : [0, 1, 2].map((i) => (
+                      <div key={i} style={sensorSlotStyle(i)} onClick={() => handleSetSensor(i)} title={SENSOR_LABELS[SENSOR_KINDS[i]]}>
+                        {SENSOR_LABELS[SENSOR_KINDS[i]]}
+                      </div>
+                    ))}
+              </div>
+
+              <div style={{
+                position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)",
+                color: "#fff", fontSize: 11,
+                fontFamily: '"Tahoma","Verdana","Geneva",sans-serif',
+                textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap",
+                background: "rgba(0,0,0,0.55)", padding: "4px 12px",
+                border: "2px solid",
+                borderTopColor: "#dcdcdc", borderLeftColor: "#dcdcdc",
+                borderRightColor: "#1a1a1a", borderBottomColor: "#1a1a1a",
+                borderRadius: 0, letterSpacing: 0.5,
+                textShadow: "1px 1px 0 rgba(0,0,0,0.7)",
+              }}>
+                {mode === "sensors"
+                  ? `Sensor Mode — placing ${SENSOR_LABELS[SENSOR_KINDS[activeSensorSlot]]} sensor`
+                  : "Build Mode — placing blocks"}
+                &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete
+                &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Hold Shift + hover block: scale &amp; script
+                &nbsp;|&nbsp; Drag on ground: rotate camera
+              </div>
+
+              {selectedScale !== null && (
+                <div style={{
+                  position: "absolute", top: 80, right: 20,
+                  background: "#c0c0c0",
+                  border: "2px solid",
+                  borderTopColor: "#dcdcdc", borderLeftColor: "#dcdcdc",
+                  borderRightColor: "#404040", borderBottomColor: "#404040",
+                  borderRadius: 0,
+                  fontFamily: RETRO_FONT, fontSize: 11, color: "#000",
+                  zIndex: 25, width: 240,
+                  boxShadow: "3px 3px 0 rgba(0,0,0,0.5)",
+                }}>
+                  <div style={{
+                    background: "linear-gradient(180deg,#1e3a8a 0%,#1e40af 50%,#1e3a8a 100%)",
+                    color: "#fff", padding: "5px 10px",
+                    fontWeight: "bold", fontSize: 11, letterSpacing: 1,
+                    textTransform: "uppercase",
+                    textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+                    borderBottom: "1px solid #000",
+                  }}>■ Scale Block</div>
+                  <div style={{ padding: 10 }}>
+                    {["x", "y", "z"].map((axis) => (
+                      <div key={axis} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span style={{ width: 16, textTransform: "uppercase", fontWeight: "bold" }}>{axis}</span>
+                        <input
+                          type="range" min={0.25} max={5} step={0.25}
+                          value={selectedScale[axis]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            const sel = stateRef.current.scaleSelection;
+                            if (!sel) return;
+                            sel.scale[axis] = v;
+                            setSelectedScale({ ...selectedScale, [axis]: v });
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        <span style={{
+                          width: 36, textAlign: "right",
+                          fontFamily: '"Courier New",monospace', fontWeight: "bold",
+                        }}>{selectedScale[axis].toFixed(2)}</span>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                      <button onClick={() => {
                         const sel = stateRef.current.scaleSelection;
                         if (!sel) return;
-                        sel.scale[axis] = v;
-                        setSelectedScale({ ...selectedScale, [axis]: v });
-                      }}
-                      style={{ flex: 1 }}
-                    />
-                    <span style={{ width: 36, textAlign: "right" }}>{selectedScale[axis].toFixed(2)}</span>
+                        sel.scale.set(1, 1, 1);
+                        setSelectedScale({ x: 1, y: 1, z: 1 });
+                      }} style={{ ...retroFlatBtn, flex: 1, padding: "5px 8px" }}>Reset</button>
+                      <button onClick={() => {
+                        stateRef.current.scaleSelection = null;
+                        setSelectedScale(null);
+                      }} style={{ ...retroFlatBtn, flex: 1, padding: "5px 8px" }}>Done</button>
+                    </div>
                   </div>
-                ))}
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  <button
-                    onClick={() => {
-                      const sel = stateRef.current.scaleSelection;
-                      if (!sel) return;
-                      sel.scale.set(1, 1, 1);
-                      setSelectedScale({ x: 1, y: 1, z: 1 });
-                    }}
-                    style={{ flex: 1, padding: "5px 8px", background: "#374151", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12 }}
-                  >Reset</button>
-                  <button
-                    onClick={() => {
-                      stateRef.current.scaleSelection = null;
-                      setSelectedScale(null);
-                    }}
-                    style={{ flex: 1, padding: "5px 8px", background: "#374151", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12 }}
-                  >Done</button>
                 </div>
+              )}
+
+              {showScripting && selectedScript && (
+                <div style={{
+                  position: "absolute", top: 80, right: 280,
+                  background: "#c0c0c0",
+                  border: "2px solid",
+                  borderTopColor: "#dcdcdc", borderLeftColor: "#dcdcdc",
+                  borderRightColor: "#404040", borderBottomColor: "#404040",
+                  borderRadius: 0,
+                  fontFamily: RETRO_FONT, fontSize: 11, color: "#000",
+                  zIndex: 25, width: 360,
+                  boxShadow: "3px 3px 0 rgba(0,0,0,0.5)",
+                }}>
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    background: "linear-gradient(180deg,#15803d 0%,#16a34a 50%,#15803d 100%)",
+                    color: "#fff", padding: "5px 10px",
+                    fontWeight: "bold", fontSize: 11, letterSpacing: 1,
+                    textTransform: "uppercase",
+                    textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+                    borderBottom: "1px solid #000",
+                  }}>
+                    <span style={{ fontSize: 13 }}>⚙</span> Block Script
+                    <label style={{
+                      marginLeft: "auto", display: "flex", alignItems: "center", gap: 4,
+                      fontWeight: "bold", fontSize: 10,
+                      textTransform: "uppercase", letterSpacing: 1, cursor: "pointer",
+                    }}>
+                      <input type="checkbox" checked={selectedScript.enabled}
+                        onChange={(e) => updateScript({ ...selectedScript, enabled: e.target.checked })} />
+                      {selectedScript.enabled ? "On" : "Off"}
+                    </label>
+                    <button onClick={closeScriptPanel} title="Close" style={{
+                      ...retroFlatBtn, marginLeft: 4,
+                      width: 20, height: 18, padding: 0,
+                      fontSize: 12, lineHeight: 1,
+                    }}>×</button>
+                  </div>
+
+                  <div style={{ padding: 10 }}>
+                    <div style={{ marginBottom: 6 }}>
+                      <label style={{
+                        display: "block", fontSize: 10, fontWeight: "bold",
+                        textTransform: "uppercase", letterSpacing: 1,
+                        marginBottom: 4, color: "#1a1a1a",
+                      }}>
+                        Custom JavaScript (runs every frame in Test mode)
+                      </label>
+                      <textarea
+                        value={selectedScript.custom}
+                        onChange={(e) => updateScript({ ...selectedScript, custom: e.target.value })}
+                        spellCheck={false}
+                        style={{
+                          width: "100%", height: 220, background: "#0b1220", color: "#86efac",
+                          border: "2px solid",
+                          borderTopColor: "#1a1a1a", borderLeftColor: "#1a1a1a",
+                          borderRightColor: "#fff", borderBottomColor: "#fff",
+                          borderRadius: 0, padding: 8,
+                          fontFamily: '"Courier New",ui-monospace,monospace',
+                          fontSize: 12, resize: "vertical",
+                        }}
+                      />
+                      <div style={{ fontSize: 10, color: "#1a1a1a", marginTop: 4, lineHeight: 1.4 }}>
+                        Vars: <code>block</code>, <code>time</code>, <code>dt</code>, <code>THREE</code>, <code>player</code>.
+                        Set <code>block.userData.rideable = true</code> to carry the player.
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                      <button onClick={() => updateScript({ ...DEFAULT_SCRIPT })}
+                        style={{ ...retroFlatBtn, flex: 1, padding: "5px 8px" }}>Reset</button>
+                      <button onClick={enterTest} style={{
+                        ...retroToolbarBtn("#86efac","#22c55e","#15803d","#bbf7d0"),
+                        flex: 1, padding: "5px 8px", fontSize: 11,
+                      }}>▶ Test</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {testBlocks !== null && (
+              <div style={{ position: "absolute", inset: 0, zIndex: 100 }}>
+                <TestMode blocks={testBlocks} onExit={exitTest} />
               </div>
             )}
           </div>
+        );
+      }
 
-          {/* Test mode overlay */}
-          {testBlocks !== null && (
-            <div style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-              <TestMode blocks={testBlocks} onExit={exitTest} />
-            </div>
-          )}
-        </div>
-      );
-    }
+      function App() { return <Game />; }
 
-    /* ─────────────────────────── MOUNT ─────────────────────────── */
-
-    ReactDOM.createRoot(document.getElementById("root")).render(<Game />);
-  </script>
-</body>
+      createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
 </html>
