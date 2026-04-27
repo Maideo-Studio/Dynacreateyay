@@ -30,8 +30,55 @@
       import React, { useEffect, useRef, useState } from "react";
       import { createRoot } from "react-dom/client";
       import * as THREE from "three";
+      import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js?external=three";
 
       const BLOCK_SIZE = { x: 1.0, y: 0.5, z: 0.6 };
+
+      const OBJ_LOADER = new OBJLoader();
+
+      function mergePositionGeometries(geoms) {
+        const arrays = geoms.map((g) => (g.index ? g.toNonIndexed() : g));
+        let total = 0;
+        arrays.forEach((g) => { total += g.attributes.position.count; });
+        const positions = new Float32Array(total * 3);
+        let offset = 0;
+        arrays.forEach((g) => {
+          const p = g.attributes.position.array;
+          positions.set(p, offset);
+          offset += p.length;
+        });
+        const merged = new THREE.BufferGeometry();
+        merged.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        return merged;
+      }
+
+      function parseObjToGeometry(text) {
+        let group;
+        try { group = OBJ_LOADER.parse(text); } catch { return null; }
+        group.updateMatrixWorld(true);
+        const geoms = [];
+        group.traverse((child) => {
+          if (child.isMesh && child.geometry && child.geometry.attributes.position) {
+            const g = child.geometry.clone();
+            g.applyMatrix4(child.matrixWorld);
+            geoms.push(g);
+          }
+        });
+        if (geoms.length === 0) return null;
+        const combined = geoms.length === 1 ? geoms[0] : mergePositionGeometries(geoms);
+        combined.computeBoundingBox();
+        const bbox = combined.boundingBox;
+        const center = new THREE.Vector3();
+        bbox.getCenter(center);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scale = BLOCK_SIZE.x / maxDim;
+        combined.translate(-center.x, -center.y, -center.z);
+        combined.scale(scale, scale, scale);
+        combined.computeVertexNormals();
+        return combined;
+      }
       const BLOCK_SCALE = 4;
       const TEXTURE_URLS = [
         "https://raw.githubusercontent.com/Maideo-Studio/Dynaverse-faces/refs/heads/main/roblox-stud%20(1).png",
@@ -80,7 +127,7 @@
 
       /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
 
-      function createEngine(renderer, container, blocks, setCoords) {
+      function createEngine(renderer, container, blocks, setCoords, customObjGeoms) {
         let animId = 0;
         const keys = {};
 
@@ -199,12 +246,20 @@
             });
             continue;
           }
-          const mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(
+          let geometry, material;
+          if (b.shape === "obj" && customObjGeoms && customObjGeoms[b.objIndex]) {
+            geometry = customObjGeoms[b.objIndex].clone();
+            geometry.scale(BLOCK_SCALE, BLOCK_SCALE, BLOCK_SCALE);
+            material = new THREE.MeshStandardMaterial({
+              color: 0xc0c0c0, metalness: 0.15, roughness: 0.7,
+            });
+          } else {
+            geometry = new THREE.BoxGeometry(
               BLOCK_SIZE.x * BLOCK_SCALE, BLOCK_SIZE.y * BLOCK_SCALE, BLOCK_SIZE.z * BLOCK_SCALE,
-            ),
-            new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] }),
-          );
+            );
+            material = new THREE.MeshStandardMaterial({ map: blockTextures[b.texIndex] });
+          }
+          const mesh = new THREE.Mesh(geometry, material);
           mesh.position.set(
             b.pos.x * BLOCK_SCALE, b.pos.y * BLOCK_SCALE - 1.1, b.pos.z * BLOCK_SCALE,
           );
@@ -212,7 +267,7 @@
           const script = b.script ?? { ...DEFAULT_SCRIPT };
           mesh.userData = {
             texIndex: b.texIndex,
-            shape: "block",
+            shape: b.shape || "block",
             script,
             basePos: mesh.position.clone(),
             rideable: false,
@@ -497,7 +552,7 @@
 
       /* ─────────────────────────── TEST MODE COMPONENT ─────────────────────────── */
 
-      function TestMode({ blocks, onExit }) {
+      function TestMode({ data, onExit }) {
         const mountRef = useRef(null);
         const [coords, setCoords] = useState({ x: 0, y: 0, z: 0 });
 
@@ -513,7 +568,9 @@
           renderer.setPixelRatio(window.devicePixelRatio);
           mount.appendChild(renderer.domElement);
 
-          const engine = createEngine(renderer, mount, blocks, setCoords);
+          const customObjGeoms = (data.customObjs || [])
+            .map((o) => parseObjToGeometry(o.text));
+          const engine = createEngine(renderer, mount, data.blocks, setCoords, customObjGeoms);
 
           const onResize = () => {
             engine.camera.aspect = mount.clientWidth / mount.clientHeight;
@@ -580,6 +637,7 @@
         const [testBlocks, setTestBlocks] = useState(null);
         const [selectedScale, setSelectedScale] = useState(null);
         const [selectedScript, setSelectedScript] = useState(null);
+        const [customObjs, setCustomObjs] = useState([]);
 
         const stateRef = useRef({
           scene: null, camera: null, renderer: null,
@@ -589,6 +647,7 @@
           selectedBlock: null, scaleSelection: null, scriptSelection: null,
           shiftDown: false,
           objects: [], blocks: [], blockTextures: [],
+          customGeometries: [],
           isDraggingCamera: false, mouseDownTime: 0, isMovingBlock: false,
           startMousePos: { x: 0, y: 0 }, previousMousePosition: { x: 0, y: 0 },
           yaw: 0.5, pitch: 0.8, radius: 15, animFrameId: 0,
@@ -673,7 +732,26 @@
           canvas.addEventListener("contextmenu", preventCtx);
           window.addEventListener("resize", onResize);
 
-          const onKeyDown = (e) => { if (e.key === "Shift") s.shiftDown = true; };
+          const onKeyDown = (e) => {
+            if (e.key === "Shift") {
+              s.shiftDown = true;
+              if (s.scene && s.camera) {
+                s.raycaster.setFromCamera(s.mouse, s.camera);
+                const hits = s.raycaster.intersectObjects(s.objects);
+                if (hits.length > 0 && hits[0].object !== s.ground) {
+                  const m = hits[0].object;
+                  s.scaleSelection = m;
+                  setSelectedScale({ x: m.scale.x, y: m.scale.y, z: m.scale.z });
+                  if (m.userData.shape !== "sphere") {
+                    s.scriptSelection = m;
+                    const sc = m.userData.script || { ...DEFAULT_SCRIPT };
+                    m.userData.script = sc;
+                    setSelectedScript({ ...sc });
+                  }
+                }
+              }
+            }
+          };
           const onKeyUp = (e) => { if (e.key === "Shift") s.shiftDown = false; };
           window.addEventListener("keydown", onKeyDown);
           window.addEventListener("keyup", onKeyUp);
@@ -787,18 +865,25 @@
             );
           }
 
-          function createBlock(position, texIndex, shape, sensorKind) {
+          function createBlock(position, texIndex, shape, sensorKind, objIndex) {
             const isSphere = shape === "sphere";
-            const geometry = isSphere
-              ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
-              : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-            let material;
-            if (isSphere) {
+            const isObj = shape === "obj";
+            let geometry, material;
+            if (isObj) {
+              const customGeom = s.customGeometries[objIndex];
+              if (!customGeom) return null;
+              geometry = customGeom.clone();
+              material = new THREE.MeshStandardMaterial({
+                color: 0xc0c0c0, metalness: 0.15, roughness: 0.7,
+              });
+            } else if (isSphere) {
+              geometry = new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24);
               const c = SENSOR_COLORS[sensorKind || "kill"];
               material = new THREE.MeshStandardMaterial({
                 color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
               });
             } else {
+              geometry = new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
               material = new THREE.MeshStandardMaterial({ map: s.blockTextures[texIndex] });
             }
             const block = new THREE.Mesh(geometry, material);
@@ -807,9 +892,11 @@
             block.userData.shape = shape;
             block.userData.script = { ...DEFAULT_SCRIPT };
             if (isSphere) block.userData.sensorKind = sensorKind || "kill";
+            if (isObj) block.userData.objIndex = objIndex;
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
+            return block;
           }
 
           function onMouseMove(e) {
@@ -902,12 +989,19 @@
                   s.selectedBlock = null;
                 } else if (s.ghostBlock.visible) {
                   const isSensor = modeRef.current === "sensors";
-                  createBlock(
-                    s.ghostBlock.position.clone(),
-                    activeSlotRef.current,
-                    isSensor ? "sphere" : "block",
-                    isSensor ? SENSOR_KINDS[activeSensorSlotRef.current] : undefined,
-                  );
+                  const slot = activeSlotRef.current;
+                  if (isSensor) {
+                    createBlock(
+                      s.ghostBlock.position.clone(), 0, "sphere",
+                      SENSOR_KINDS[activeSensorSlotRef.current],
+                    );
+                  } else if (slot >= 5) {
+                    createBlock(
+                      s.ghostBlock.position.clone(), 0, "obj", undefined, slot - 5,
+                    );
+                  } else {
+                    createBlock(s.ghostBlock.position.clone(), slot, "block");
+                  }
                 }
               }
 
@@ -948,17 +1042,42 @@
           const s = stateRef.current;
           if (!s.ghostBlock) return;
           s.ghostBlock.geometry.dispose();
-          s.ghostBlock.geometry =
-            mode === "sensors"
-              ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
-              : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+          if (mode === "sensors") {
+            s.ghostBlock.geometry = new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24);
+          } else if (activeSlot >= 5 && s.customGeometries[activeSlot - 5]) {
+            s.ghostBlock.geometry = s.customGeometries[activeSlot - 5].clone();
+          } else {
+            s.ghostBlock.geometry = new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+          }
           const mat = s.ghostBlock.material;
           if (mode === "sensors") {
             mat.color.setHex(SENSOR_COLORS[SENSOR_KINDS[activeSensorSlot]].color);
           } else {
             mat.color.setHex(0x60a5fa);
           }
-        }, [mode, activeSensorSlot]);
+        }, [mode, activeSensorSlot, activeSlot, customObjs.length]);
+
+        function handleImportObj(e) {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const text = ev.target.result;
+            const geom = parseObjToGeometry(text);
+            if (!geom) { alert("Could not parse OBJ file."); e.target.value = ""; return; }
+            const s = stateRef.current;
+            s.customGeometries.push(geom);
+            const name = file.name.replace(/\.obj$/i, "");
+            const newIndex = 5 + s.customGeometries.length - 1;
+            setCustomObjs((prev) => [...prev, { name, text }]);
+            modeRef.current = "build";
+            setMode("build");
+            activeSlotRef.current = newIndex;
+            setActiveSlot(newIndex);
+          };
+          reader.readAsText(file);
+          e.target.value = "";
+        }
 
         function handleSetTexture(i) { activeSlotRef.current = i; setActiveSlot(i); }
         function handleSetSensor(i) { activeSensorSlotRef.current = i; setActiveSensorSlot(i); }
@@ -970,27 +1089,35 @@
 
         function enterTest() {
           const s = stateRef.current;
-          setTestBlocks(s.blocks.map((b) => ({
-            pos: { x: b.position.x, y: b.position.y, z: b.position.z },
-            texIndex: b.userData.texIndex ?? 0,
-            shape: b.userData.shape || "block",
-            sensorKind: b.userData.sensorKind,
-            scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
-            script: b.userData.script ?? { ...DEFAULT_SCRIPT },
-          })));
+          setTestBlocks({
+            blocks: s.blocks.map((b) => ({
+              pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+              texIndex: b.userData.texIndex ?? 0,
+              shape: b.userData.shape || "block",
+              sensorKind: b.userData.sensorKind,
+              objIndex: b.userData.objIndex,
+              scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
+              script: b.userData.script ?? { ...DEFAULT_SCRIPT },
+            })),
+            customObjs: customObjs,
+          });
         }
         function exitTest() { setTestBlocks(null); }
 
         function saveWorld() {
           const s = stateRef.current;
-          const data = s.blocks.map((b) => ({
-            pos: { x: b.position.x, y: b.position.y, z: b.position.z },
-            texIndex: b.userData.texIndex ?? 0,
-            shape: b.userData.shape || "block",
-            sensorKind: b.userData.sensorKind,
-            scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
-            script: b.userData.script ?? { ...DEFAULT_SCRIPT },
-          }));
+          const data = {
+            customObjs,
+            blocks: s.blocks.map((b) => ({
+              pos: { x: b.position.x, y: b.position.y, z: b.position.z },
+              texIndex: b.userData.texIndex ?? 0,
+              shape: b.userData.shape || "block",
+              sensorKind: b.userData.sensorKind,
+              objIndex: b.userData.objIndex,
+              scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
+              script: b.userData.script ?? { ...DEFAULT_SCRIPT },
+            })),
+          };
           const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
           const url = URL.createObjectURL(blob);
           const link = document.createElement("a");
@@ -1004,38 +1131,36 @@
           const reader = new FileReader();
           reader.onload = (ev) => {
             const s = stateRef.current;
-            const data = JSON.parse(ev.target.result);
+            const parsed = JSON.parse(ev.target.result);
+            const isLegacy = Array.isArray(parsed);
+            const blocksData = isLegacy ? parsed : parsed.blocks || [];
+            const objsData = isLegacy ? [] : parsed.customObjs || [];
+
             s.blocks.forEach((b) => {
               s.scene.remove(b);
               s.objects = s.objects.filter((o) => o !== b);
             });
             s.blocks = [];
-            data.forEach((item) => {
+
+            s.customGeometries = objsData.map((o) => parseObjToGeometry(o.text)).filter(Boolean);
+            const validObjs = objsData.filter((o, i) => s.customGeometries[i]);
+            setCustomObjs(validObjs);
+
+            blocksData.forEach((item) => {
               const shape = item.shape || "block";
-              const isSphere = shape === "sphere";
-              const sensorKind = item.sensorKind || "kill";
-              const geometry = isSphere
-                ? new THREE.SphereGeometry(BLOCK_SIZE.x / 2, 32, 24)
-                : new THREE.BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
-              let material;
-              if (isSphere) {
-                const c = SENSOR_COLORS[sensorKind];
-                material = new THREE.MeshStandardMaterial({
-                  color: c.color, emissive: c.emissive, emissiveIntensity: 0.4,
-                });
+              const pos = new THREE.Vector3(item.pos.x, item.pos.y, item.pos.z);
+              let block;
+              if (shape === "obj") {
+                block = createBlock(pos, 0, "obj", undefined, item.objIndex ?? 0);
+              } else if (shape === "sphere") {
+                block = createBlock(pos, 0, "sphere", item.sensorKind || "kill");
               } else {
-                material = new THREE.MeshStandardMaterial({ map: s.blockTextures[item.texIndex] });
+                block = createBlock(pos, item.texIndex ?? 0, "block");
               }
-              const block = new THREE.Mesh(geometry, material);
-              block.position.set(item.pos.x, item.pos.y, item.pos.z);
-              block.userData.texIndex = item.texIndex;
-              block.userData.shape = shape;
-              block.userData.script = item.script ?? { ...DEFAULT_SCRIPT };
-              if (isSphere) block.userData.sensorKind = sensorKind;
-              if (item.scale) block.scale.set(item.scale.x, item.scale.y, item.scale.z);
-              s.scene.add(block);
-              s.objects.push(block);
-              s.blocks.push(block);
+              if (block) {
+                if (item.scale) block.scale.set(item.scale.x, item.scale.y, item.scale.z);
+                if (item.script) block.userData.script = item.script;
+              }
             });
           };
           reader.readAsText(file);
@@ -1159,6 +1284,13 @@
                   Load World
                   <input type="file" accept=".json" style={{ display: "none" }} onChange={loadWorld} />
                 </label>
+                <label style={{
+                  ...retroToolbarBtn("#fcd34d","#eab308","#854d0e","#fde68a"),
+                  userSelect: "none", display: "inline-block",
+                }} title="Import a .obj model as a placeable block">
+                  Import OBJ
+                  <input type="file" accept=".obj" style={{ display: "none" }} onChange={handleImportObj} />
+                </label>
               </div>
 
               <div style={{
@@ -1166,11 +1298,46 @@
                 display: "flex", gap: 10, zIndex: 20,
               }}>
                 {mode === "build"
-                  ? [0, 1, 2, 3, 4].map((i) => (
-                      <div key={i} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>
-                        {i + 1}
-                      </div>
-                    ))
+                  ? [
+                      ...[0, 1, 2, 3, 4].map((i) => (
+                        <div key={`tex-${i}`} style={slotStyle(i)} onClick={() => handleSetTexture(i)}>
+                          {i + 1}
+                        </div>
+                      )),
+                      ...customObjs.map((obj, i) => {
+                        const slotIdx = 5 + i;
+                        const active = activeSlot === slotIdx;
+                        return (
+                          <div
+                            key={`obj-${i}`}
+                            onClick={() => handleSetTexture(slotIdx)}
+                            title={obj.name}
+                            style={{
+                              width: 56, height: 56,
+                              border: "3px solid",
+                              borderTopColor: active ? "#1a1a1a" : "#dcdcdc",
+                              borderLeftColor: active ? "#1a1a1a" : "#dcdcdc",
+                              borderRightColor: active ? "#dcdcdc" : "#1a1a1a",
+                              borderBottomColor: active ? "#dcdcdc" : "#1a1a1a",
+                              background: active
+                                ? "linear-gradient(180deg,#eab308 0%,#854d0e 100%)"
+                                : "linear-gradient(180deg,#a8a8a8 0%,#7d7d7d 100%)",
+                              color: "white",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              cursor: "pointer", userSelect: "none",
+                              fontFamily: RETRO_FONT, fontWeight: "bold", fontSize: 9,
+                              textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+                              borderRadius: 0,
+                              boxShadow: "2px 2px 0 rgba(0,0,0,0.4)",
+                              padding: 2, textAlign: "center", overflow: "hidden",
+                              wordBreak: "break-all", lineHeight: 1.1,
+                            }}
+                          >
+                            {obj.name.slice(0, 10)}
+                          </div>
+                        );
+                      }),
+                    ]
                   : [0, 1, 2].map((i) => (
                       <div key={i} style={sensorSlotStyle(i)} onClick={() => handleSetSensor(i)} title={SENSOR_LABELS[SENSOR_KINDS[i]]}>
                         {SENSOR_LABELS[SENSOR_KINDS[i]]}
@@ -1194,7 +1361,7 @@
                   ? `Sensor Mode — placing ${SENSOR_LABELS[SENSOR_KINDS[activeSensorSlot]]} sensor`
                   : "Build Mode — placing blocks"}
                 &nbsp;|&nbsp; Click: place &nbsp;|&nbsp; Right-click: delete
-                &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Hold Shift + hover block: scale &amp; script
+                &nbsp;|&nbsp; Hold on block: move &nbsp;|&nbsp; Shift while hovering block: scale &amp; script
                 &nbsp;|&nbsp; Drag on ground: rotate camera
               </div>
 
@@ -1219,27 +1386,72 @@
                     borderBottom: "1px solid #000",
                   }}>■ Scale Block</div>
                   <div style={{ padding: 10 }}>
-                    {["x", "y", "z"].map((axis) => (
-                      <div key={axis} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <span style={{ width: 16, textTransform: "uppercase", fontWeight: "bold" }}>{axis}</span>
-                        <input
-                          type="range" min={0.25} max={5} step={0.25}
-                          value={selectedScale[axis]}
-                          onChange={(e) => {
-                            const v = parseFloat(e.target.value);
-                            const sel = stateRef.current.scaleSelection;
-                            if (!sel) return;
-                            sel.scale[axis] = v;
-                            setSelectedScale({ ...selectedScale, [axis]: v });
-                          }}
-                          style={{ flex: 1 }}
-                        />
-                        <span style={{
-                          width: 36, textAlign: "right",
-                          fontFamily: '"Courier New",monospace', fontWeight: "bold",
-                        }}>{selectedScale[axis].toFixed(2)}</span>
-                      </div>
-                    ))}
+                    {["x", "y", "z"].map((axis) => {
+                      const rawVal = selectedScale[axis];
+                      const numVal = typeof rawVal === "number" ? rawVal : parseFloat(rawVal);
+                      const sliderVal = Number.isFinite(numVal)
+                        ? Math.max(0.25, Math.min(5, numVal))
+                        : 1;
+                      return (
+                        <div key={axis} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ width: 16, textTransform: "uppercase", fontWeight: "bold" }}>{axis}</span>
+                          <input
+                            type="range" min={0.25} max={5} step={0.25}
+                            value={sliderVal}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              const sel = stateRef.current.scaleSelection;
+                              if (!sel) return;
+                              sel.scale[axis] = v;
+                              setSelectedScale({ ...selectedScale, [axis]: v });
+                            }}
+                            style={{ flex: 1 }}
+                          />
+                          <input
+                            type="number"
+                            step={0.25}
+                            value={
+                              typeof rawVal === "string"
+                                ? rawVal
+                                : Number.isFinite(numVal)
+                                ? numVal.toFixed(2)
+                                : ""
+                            }
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const v = parseFloat(raw);
+                              if (raw === "" || raw === "-" || isNaN(v)) {
+                                setSelectedScale({ ...selectedScale, [axis]: raw });
+                                return;
+                              }
+                              const sel = stateRef.current.scaleSelection;
+                              if (sel) sel.scale[axis] = v;
+                              setSelectedScale({ ...selectedScale, [axis]: v });
+                            }}
+                            onBlur={(e) => {
+                              const v = parseFloat(e.target.value);
+                              if (!Number.isFinite(v)) {
+                                const sel = stateRef.current.scaleSelection;
+                                const fallback = sel ? sel.scale[axis] : 1;
+                                setSelectedScale({ ...selectedScale, [axis]: fallback });
+                              } else {
+                                setSelectedScale({ ...selectedScale, [axis]: v });
+                              }
+                            }}
+                            style={{
+                              width: 64, textAlign: "right",
+                              fontFamily: '"Courier New",monospace', fontWeight: "bold",
+                              background: "#fff", color: "#000",
+                              border: "2px solid",
+                              borderTopColor: "#1a1a1a", borderLeftColor: "#1a1a1a",
+                              borderRightColor: "#dcdcdc", borderBottomColor: "#dcdcdc",
+                              borderRadius: 0, padding: "1px 3px", fontSize: 11,
+                              MozAppearance: "textfield",
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
                     <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
                       <button onClick={() => {
                         const sel = stateRef.current.scaleSelection;
@@ -1338,7 +1550,7 @@
 
             {testBlocks !== null && (
               <div style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-                <TestMode blocks={testBlocks} onExit={exitTest} />
+                <TestMode data={testBlocks} onExit={exitTest} />
               </div>
             )}
           </div>
