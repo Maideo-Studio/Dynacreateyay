@@ -30,11 +30,28 @@
       import React, { useEffect, useRef, useState } from "react";
       import { createRoot } from "react-dom/client";
       import * as THREE from "three";
-      import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js?external=three";
+      import { GLTFLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js?external=three";
 
       const BLOCK_SIZE = { x: 1.0, y: 0.5, z: 0.6 };
 
-      const OBJ_LOADER = new OBJLoader();
+      const GLTF_LOADER = new GLTFLoader();
+
+      function arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        return btoa(binary);
+      }
+
+      function base64ToArrayBuffer(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes.buffer;
+      }
 
       function mergePositionGeometries(geoms) {
         const arrays = geoms.map((g) => (g.index ? g.toNonIndexed() : g));
@@ -52,32 +69,66 @@
         return merged;
       }
 
-      function parseObjToGeometry(text) {
-        let group;
-        try { group = OBJ_LOADER.parse(text); } catch { return null; }
-        group.updateMatrixWorld(true);
-        const geoms = [];
-        group.traverse((child) => {
-          if (child.isMesh && child.geometry && child.geometry.attributes.position) {
-            const g = child.geometry.clone();
-            g.applyMatrix4(child.matrixWorld);
-            geoms.push(g);
+      function parseGlbToGeometry(arrayBuffer) {
+        return new Promise((resolve, reject) => {
+          if (!arrayBuffer || arrayBuffer.byteLength < 12) {
+            reject(new Error("Empty or truncated file."));
+            return;
+          }
+          const head = new Uint8Array(arrayBuffer, 0, 4);
+          const magic = String.fromCharCode(head[0], head[1], head[2], head[3]);
+          if (magic !== "glTF") {
+            reject(new Error(
+              "This file is not a binary .glb (missing glTF magic bytes). " +
+              "If you have a .gltf+.bin pair, export it as a single .glb instead."
+            ));
+            return;
+          }
+          let onLoad, onError;
+          onLoad = (gltf) => {
+            try {
+              const root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+              if (!root) { reject(new Error("GLB has no scene.")); return; }
+              root.updateMatrixWorld(true);
+              const geoms = [];
+              root.traverse((child) => {
+                if (child.isMesh && child.geometry && child.geometry.attributes.position) {
+                  const g = child.geometry.clone();
+                  g.applyMatrix4(child.matrixWorld);
+                  geoms.push(g);
+                }
+              });
+              if (geoms.length === 0) {
+                reject(new Error("GLB contains no mesh geometry (only lights, cameras, or curves?)."));
+                return;
+              }
+              const combined = geoms.length === 1 ? geoms[0] : mergePositionGeometries(geoms);
+              combined.computeBoundingBox();
+              const bbox = combined.boundingBox;
+              const center = new THREE.Vector3();
+              bbox.getCenter(center);
+              const size = new THREE.Vector3();
+              bbox.getSize(size);
+              const maxDim = Math.max(size.x, size.y, size.z) || 1;
+              const scale = BLOCK_SIZE.x / maxDim;
+              combined.translate(-center.x, -center.y, -center.z);
+              combined.scale(scale, scale, scale);
+              combined.computeVertexNormals();
+              resolve(combined);
+            } catch (err) {
+              reject(err);
+            }
+          };
+          onError = (err) => {
+            const msg = (err && (err.message || err.toString())) || "Unknown GLTFLoader error.";
+            reject(new Error("GLTFLoader could not parse this file: " + msg));
+          };
+          try {
+            GLTF_LOADER.parse(arrayBuffer, "", onLoad, onError);
+          } catch (err) {
+            onError(err);
           }
         });
-        if (geoms.length === 0) return null;
-        const combined = geoms.length === 1 ? geoms[0] : mergePositionGeometries(geoms);
-        combined.computeBoundingBox();
-        const bbox = combined.boundingBox;
-        const center = new THREE.Vector3();
-        bbox.getCenter(center);
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
-        const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const scale = BLOCK_SIZE.x / maxDim;
-        combined.translate(-center.x, -center.y, -center.z);
-        combined.scale(scale, scale, scale);
-        combined.computeVertexNormals();
-        return combined;
       }
       const BLOCK_SCALE = 4;
       const TEXTURE_URLS = [
@@ -127,7 +178,7 @@
 
       /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
 
-      function createEngine(renderer, container, blocks, setCoords, customObjGeoms) {
+      function createEngine(renderer, container, blocks, setCoords, customGlbGeoms) {
         let animId = 0;
         const keys = {};
 
@@ -247,8 +298,8 @@
             continue;
           }
           let geometry, material;
-          if (b.shape === "obj" && customObjGeoms && customObjGeoms[b.objIndex]) {
-            geometry = customObjGeoms[b.objIndex].clone();
+          if (b.shape === "glb" && customGlbGeoms && customGlbGeoms[b.glbIndex]) {
+            geometry = customGlbGeoms[b.glbIndex].clone();
             geometry.scale(BLOCK_SCALE, BLOCK_SCALE, BLOCK_SCALE);
             material = new THREE.MeshStandardMaterial({
               color: 0xc0c0c0, metalness: 0.15, roughness: 0.7,
@@ -568,19 +619,31 @@
           renderer.setPixelRatio(window.devicePixelRatio);
           mount.appendChild(renderer.domElement);
 
-          const customObjGeoms = (data.customObjs || [])
-            .map((o) => parseObjToGeometry(o.text));
-          const engine = createEngine(renderer, mount, data.blocks, setCoords, customObjGeoms);
+          let engine = null;
+          let cancelled = false;
 
           const onResize = () => {
+            if (!engine) return;
             engine.camera.aspect = mount.clientWidth / mount.clientHeight;
             engine.camera.updateProjectionMatrix();
             renderer.setSize(mount.clientWidth, mount.clientHeight);
           };
           window.addEventListener("resize", onResize);
 
+          (async () => {
+            const results = await Promise.allSettled(
+              (data.customGlbs || []).map((o) =>
+                parseGlbToGeometry(base64ToArrayBuffer(o.data)),
+              ),
+            );
+            if (cancelled) return;
+            const customGlbGeoms = results.map((r) => (r.status === "fulfilled" ? r.value : null));
+            engine = createEngine(renderer, mount, data.blocks, setCoords, customGlbGeoms);
+          })();
+
           return () => {
-            engine.destroy();
+            cancelled = true;
+            if (engine) engine.destroy();
             renderer.dispose();
             if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
             window.removeEventListener("resize", onResize);
@@ -637,7 +700,7 @@
         const [testBlocks, setTestBlocks] = useState(null);
         const [selectedScale, setSelectedScale] = useState(null);
         const [selectedScript, setSelectedScript] = useState(null);
-        const [customObjs, setCustomObjs] = useState([]);
+        const [customGlbs, setCustomGlbs] = useState([]);
 
         const stateRef = useRef({
           scene: null, camera: null, renderer: null,
@@ -865,12 +928,12 @@
             );
           }
 
-          function createBlock(position, texIndex, shape, sensorKind, objIndex) {
+          function createBlock(position, texIndex, shape, sensorKind, glbIndex) {
             const isSphere = shape === "sphere";
-            const isObj = shape === "obj";
+            const isGlb = shape === "glb";
             let geometry, material;
-            if (isObj) {
-              const customGeom = s.customGeometries[objIndex];
+            if (isGlb) {
+              const customGeom = s.customGeometries[glbIndex];
               if (!customGeom) return null;
               geometry = customGeom.clone();
               material = new THREE.MeshStandardMaterial({
@@ -892,7 +955,7 @@
             block.userData.shape = shape;
             block.userData.script = { ...DEFAULT_SCRIPT };
             if (isSphere) block.userData.sensorKind = sensorKind || "kill";
-            if (isObj) block.userData.objIndex = objIndex;
+            if (isGlb) block.userData.glbIndex = glbIndex;
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
@@ -997,7 +1060,7 @@
                     );
                   } else if (slot >= 5) {
                     createBlock(
-                      s.ghostBlock.position.clone(), 0, "obj", undefined, slot - 5,
+                      s.ghostBlock.position.clone(), 0, "glb", undefined, slot - 5,
                     );
                   } else {
                     createBlock(s.ghostBlock.position.clone(), slot, "block");
@@ -1055,28 +1118,40 @@
           } else {
             mat.color.setHex(0x60a5fa);
           }
-        }, [mode, activeSensorSlot, activeSlot, customObjs.length]);
+        }, [mode, activeSensorSlot, activeSlot, customGlbs.length]);
 
-        function handleImportObj(e) {
+        function handleImportGlb(e) {
           const file = e.target.files && e.target.files[0];
           if (!file) return;
+          const input = e.target;
           const reader = new FileReader();
-          reader.onload = (ev) => {
-            const text = ev.target.result;
-            const geom = parseObjToGeometry(text);
-            if (!geom) { alert("Could not parse OBJ file."); e.target.value = ""; return; }
-            const s = stateRef.current;
-            s.customGeometries.push(geom);
-            const name = file.name.replace(/\.obj$/i, "");
-            const newIndex = 5 + s.customGeometries.length - 1;
-            setCustomObjs((prev) => [...prev, { name, text }]);
-            modeRef.current = "build";
-            setMode("build");
-            activeSlotRef.current = newIndex;
-            setActiveSlot(newIndex);
+          reader.onerror = () => {
+            console.error("FileReader error:", reader.error);
+            alert("Could not read the file: " + (reader.error && reader.error.message || "unknown error"));
+            input.value = "";
           };
-          reader.readAsText(file);
-          e.target.value = "";
+          reader.onload = async (ev) => {
+            const arrayBuffer = ev.target.result;
+            try {
+              const geom = await parseGlbToGeometry(arrayBuffer);
+              const s = stateRef.current;
+              s.customGeometries.push(geom);
+              const name = file.name.replace(/\.glb$/i, "");
+              const data = arrayBufferToBase64(arrayBuffer);
+              const newIndex = 5 + s.customGeometries.length - 1;
+              setCustomGlbs((prev) => [...prev, { name, data }]);
+              modeRef.current = "build";
+              setMode("build");
+              activeSlotRef.current = newIndex;
+              setActiveSlot(newIndex);
+            } catch (err) {
+              console.error("GLB import failed:", err);
+              alert("Could not import GLB file:\n\n" + (err && err.message ? err.message : err));
+            } finally {
+              input.value = "";
+            }
+          };
+          reader.readAsArrayBuffer(file);
         }
 
         function handleSetTexture(i) { activeSlotRef.current = i; setActiveSlot(i); }
@@ -1095,11 +1170,11 @@
               texIndex: b.userData.texIndex ?? 0,
               shape: b.userData.shape || "block",
               sensorKind: b.userData.sensorKind,
-              objIndex: b.userData.objIndex,
+              glbIndex: b.userData.glbIndex,
               scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
               script: b.userData.script ?? { ...DEFAULT_SCRIPT },
             })),
-            customObjs: customObjs,
+            customGlbs: customGlbs,
           });
         }
         function exitTest() { setTestBlocks(null); }
@@ -1107,13 +1182,13 @@
         function saveWorld() {
           const s = stateRef.current;
           const data = {
-            customObjs,
+            customGlbs,
             blocks: s.blocks.map((b) => ({
               pos: { x: b.position.x, y: b.position.y, z: b.position.z },
               texIndex: b.userData.texIndex ?? 0,
               shape: b.userData.shape || "block",
               sensorKind: b.userData.sensorKind,
-              objIndex: b.userData.objIndex,
+              glbIndex: b.userData.glbIndex,
               scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
               script: b.userData.script ?? { ...DEFAULT_SCRIPT },
             })),
@@ -1129,12 +1204,12 @@
           const file = e.target.files && e.target.files[0];
           if (!file) return;
           const reader = new FileReader();
-          reader.onload = (ev) => {
+          reader.onload = async (ev) => {
             const s = stateRef.current;
             const parsed = JSON.parse(ev.target.result);
             const isLegacy = Array.isArray(parsed);
             const blocksData = isLegacy ? parsed : parsed.blocks || [];
-            const objsData = isLegacy ? [] : parsed.customObjs || [];
+            const glbsData = isLegacy ? [] : parsed.customGlbs || [];
 
             s.blocks.forEach((b) => {
               s.scene.remove(b);
@@ -1142,16 +1217,24 @@
             });
             s.blocks = [];
 
-            s.customGeometries = objsData.map((o) => parseObjToGeometry(o.text)).filter(Boolean);
-            const validObjs = objsData.filter((o, i) => s.customGeometries[i]);
-            setCustomObjs(validObjs);
+            const settled = await Promise.allSettled(
+              glbsData.map((o) => parseGlbToGeometry(base64ToArrayBuffer(o.data))),
+            );
+            const parsedGeoms = settled.map((r, i) => {
+              if (r.status === "fulfilled") return r.value;
+              console.warn("Skipping GLB '" + (glbsData[i].name || i) + "': " + (r.reason && r.reason.message));
+              return null;
+            });
+            s.customGeometries = parsedGeoms.filter(Boolean);
+            const validGlbs = glbsData.filter((o, i) => parsedGeoms[i]);
+            setCustomGlbs(validGlbs);
 
             blocksData.forEach((item) => {
               const shape = item.shape || "block";
               const pos = new THREE.Vector3(item.pos.x, item.pos.y, item.pos.z);
               let block;
-              if (shape === "obj") {
-                block = createBlock(pos, 0, "obj", undefined, item.objIndex ?? 0);
+              if (shape === "glb") {
+                block = createBlock(pos, 0, "glb", undefined, item.glbIndex ?? 0);
               } else if (shape === "sphere") {
                 block = createBlock(pos, 0, "sphere", item.sensorKind || "kill");
               } else {
@@ -1287,9 +1370,9 @@
                 <label style={{
                   ...retroToolbarBtn("#fcd34d","#eab308","#854d0e","#fde68a"),
                   userSelect: "none", display: "inline-block",
-                }} title="Import a .obj model as a placeable block">
-                  Import OBJ
-                  <input type="file" accept=".obj" style={{ display: "none" }} onChange={handleImportObj} />
+                }} title="Import a .glb model as a placeable block">
+                  Import GLB
+                  <input type="file" accept=".glb" style={{ display: "none" }} onChange={handleImportGlb} />
                 </label>
               </div>
 
@@ -1304,14 +1387,14 @@
                           {i + 1}
                         </div>
                       )),
-                      ...customObjs.map((obj, i) => {
+                      ...customGlbs.map((glb, i) => {
                         const slotIdx = 5 + i;
                         const active = activeSlot === slotIdx;
                         return (
                           <div
-                            key={`obj-${i}`}
+                            key={`glb-${i}`}
                             onClick={() => handleSetTexture(slotIdx)}
-                            title={obj.name}
+                            title={glb.name}
                             style={{
                               width: 56, height: 56,
                               border: "3px solid",
@@ -1333,7 +1416,7 @@
                               wordBreak: "break-all", lineHeight: 1.1,
                             }}
                           >
-                            {obj.name.slice(0, 10)}
+                            {glb.name.slice(0, 10)}
                           </div>
                         );
                       }),
