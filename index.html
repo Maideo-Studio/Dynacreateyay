@@ -34,24 +34,10 @@
 
       const BLOCK_SIZE = { x: 1.0, y: 0.5, z: 0.6 };
 
+      const MODELS_REPO = "Maideo-Studio/Models";
+      const MODELS_REPO_API = `https://api.github.com/repos/${MODELS_REPO}/contents/`;
+
       const GLTF_LOADER = new GLTFLoader();
-
-      function arrayBufferToBase64(buffer) {
-        const bytes = new Uint8Array(buffer);
-        let binary = "";
-        const chunk = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunk) {
-          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-        }
-        return btoa(binary);
-      }
-
-      function base64ToArrayBuffer(base64) {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return bytes.buffer;
-      }
 
       function mergePositionGeometries(geoms) {
         const arrays = geoms.map((g) => (g.index ? g.toNonIndexed() : g));
@@ -69,66 +55,53 @@
         return merged;
       }
 
+      function normalizeGeometry(combined) {
+        combined.computeBoundingBox();
+        const bbox = combined.boundingBox;
+        const center = new THREE.Vector3();
+        bbox.getCenter(center);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scale = BLOCK_SIZE.x / maxDim;
+        combined.translate(-center.x, -center.y, -center.z);
+        combined.scale(scale, scale, scale);
+        combined.computeVertexNormals();
+        return combined;
+      }
+
       function parseGlbToGeometry(arrayBuffer) {
-        return new Promise((resolve, reject) => {
-          if (!arrayBuffer || arrayBuffer.byteLength < 12) {
-            reject(new Error("Empty or truncated file."));
-            return;
-          }
-          const head = new Uint8Array(arrayBuffer, 0, 4);
-          const magic = String.fromCharCode(head[0], head[1], head[2], head[3]);
-          if (magic !== "glTF") {
-            reject(new Error(
-              "This file is not a binary .glb (missing glTF magic bytes). " +
-              "If you have a .gltf+.bin pair, export it as a single .glb instead."
-            ));
-            return;
-          }
-          let onLoad, onError;
-          onLoad = (gltf) => {
-            try {
-              const root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
-              if (!root) { reject(new Error("GLB has no scene.")); return; }
-              root.updateMatrixWorld(true);
+        return new Promise((resolve) => {
+          GLTF_LOADER.parse(
+            arrayBuffer, "",
+            (gltf) => {
+              const scene = gltf.scene || gltf.scenes?.[0];
+              if (!scene) { resolve(null); return; }
+              scene.updateMatrixWorld(true);
               const geoms = [];
-              root.traverse((child) => {
+              scene.traverse((child) => {
                 if (child.isMesh && child.geometry && child.geometry.attributes.position) {
                   const g = child.geometry.clone();
                   g.applyMatrix4(child.matrixWorld);
                   geoms.push(g);
                 }
               });
-              if (geoms.length === 0) {
-                reject(new Error("GLB contains no mesh geometry (only lights, cameras, or curves?)."));
-                return;
-              }
+              if (geoms.length === 0) { resolve(null); return; }
               const combined = geoms.length === 1 ? geoms[0] : mergePositionGeometries(geoms);
-              combined.computeBoundingBox();
-              const bbox = combined.boundingBox;
-              const center = new THREE.Vector3();
-              bbox.getCenter(center);
-              const size = new THREE.Vector3();
-              bbox.getSize(size);
-              const maxDim = Math.max(size.x, size.y, size.z) || 1;
-              const scale = BLOCK_SIZE.x / maxDim;
-              combined.translate(-center.x, -center.y, -center.z);
-              combined.scale(scale, scale, scale);
-              combined.computeVertexNormals();
-              resolve(combined);
-            } catch (err) {
-              reject(err);
-            }
-          };
-          onError = (err) => {
-            const msg = (err && (err.message || err.toString())) || "Unknown GLTFLoader error.";
-            reject(new Error("GLTFLoader could not parse this file: " + msg));
-          };
-          try {
-            GLTF_LOADER.parse(arrayBuffer, "", onLoad, onError);
-          } catch (err) {
-            onError(err);
-          }
+              resolve(normalizeGeometry(combined));
+            },
+            () => resolve(null),
+          );
         });
+      }
+
+      async function fetchAndParseGlb(url) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const buf = await res.arrayBuffer();
+          return await parseGlbToGeometry(buf);
+        } catch { return null; }
       }
       const BLOCK_SCALE = 4;
       const TEXTURE_URLS = [
@@ -178,7 +151,7 @@
 
       /* ─────────────────────────── TEST MODE ENGINE ─────────────────────────── */
 
-      function createEngine(renderer, container, blocks, setCoords, customGlbGeoms) {
+      function createEngine(renderer, container, blocks, setCoords, customObjGeoms) {
         let animId = 0;
         const keys = {};
 
@@ -298,8 +271,8 @@
             continue;
           }
           let geometry, material;
-          if (b.shape === "glb" && customGlbGeoms && customGlbGeoms[b.glbIndex]) {
-            geometry = customGlbGeoms[b.glbIndex].clone();
+          if (b.shape === "obj" && customObjGeoms && customObjGeoms[b.objIndex]) {
+            geometry = customObjGeoms[b.objIndex].clone();
             geometry.scale(BLOCK_SCALE, BLOCK_SCALE, BLOCK_SCALE);
             material = new THREE.MeshStandardMaterial({
               color: 0xc0c0c0, metalness: 0.15, roughness: 0.7,
@@ -619,31 +592,19 @@
           renderer.setPixelRatio(window.devicePixelRatio);
           mount.appendChild(renderer.domElement);
 
-          let engine = null;
-          let cancelled = false;
+          const engine = createEngine(
+            renderer, mount, data.blocks, setCoords, data.customGeoms || [],
+          );
 
           const onResize = () => {
-            if (!engine) return;
             engine.camera.aspect = mount.clientWidth / mount.clientHeight;
             engine.camera.updateProjectionMatrix();
             renderer.setSize(mount.clientWidth, mount.clientHeight);
           };
           window.addEventListener("resize", onResize);
 
-          (async () => {
-            const results = await Promise.allSettled(
-              (data.customGlbs || []).map((o) =>
-                parseGlbToGeometry(base64ToArrayBuffer(o.data)),
-              ),
-            );
-            if (cancelled) return;
-            const customGlbGeoms = results.map((r) => (r.status === "fulfilled" ? r.value : null));
-            engine = createEngine(renderer, mount, data.blocks, setCoords, customGlbGeoms);
-          })();
-
           return () => {
-            cancelled = true;
-            if (engine) engine.destroy();
+            engine.destroy();
             renderer.dispose();
             if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
             window.removeEventListener("resize", onResize);
@@ -700,7 +661,7 @@
         const [testBlocks, setTestBlocks] = useState(null);
         const [selectedScale, setSelectedScale] = useState(null);
         const [selectedScript, setSelectedScript] = useState(null);
-        const [customGlbs, setCustomGlbs] = useState([]);
+        const [customObjs, setCustomObjs] = useState([]);
 
         const stateRef = useRef({
           scene: null, camera: null, renderer: null,
@@ -928,12 +889,12 @@
             );
           }
 
-          function createBlock(position, texIndex, shape, sensorKind, glbIndex) {
+          function createBlock(position, texIndex, shape, sensorKind, objIndex) {
             const isSphere = shape === "sphere";
-            const isGlb = shape === "glb";
+            const isObj = shape === "obj";
             let geometry, material;
-            if (isGlb) {
-              const customGeom = s.customGeometries[glbIndex];
+            if (isObj) {
+              const customGeom = s.customGeometries[objIndex];
               if (!customGeom) return null;
               geometry = customGeom.clone();
               material = new THREE.MeshStandardMaterial({
@@ -955,7 +916,7 @@
             block.userData.shape = shape;
             block.userData.script = { ...DEFAULT_SCRIPT };
             if (isSphere) block.userData.sensorKind = sensorKind || "kill";
-            if (isGlb) block.userData.glbIndex = glbIndex;
+            if (isObj) block.userData.objIndex = objIndex;
             s.scene.add(block);
             s.objects.push(block);
             s.blocks.push(block);
@@ -1060,7 +1021,7 @@
                     );
                   } else if (slot >= 5) {
                     createBlock(
-                      s.ghostBlock.position.clone(), 0, "glb", undefined, slot - 5,
+                      s.ghostBlock.position.clone(), 0, "obj", undefined, slot - 5,
                     );
                   } else {
                     createBlock(s.ghostBlock.position.clone(), slot, "block");
@@ -1118,40 +1079,46 @@
           } else {
             mat.color.setHex(0x60a5fa);
           }
-        }, [mode, activeSensorSlot, activeSlot, customGlbs.length]);
+        }, [mode, activeSensorSlot, activeSlot, customObjs.length]);
 
-        function handleImportGlb(e) {
-          const file = e.target.files && e.target.files[0];
-          if (!file) return;
-          const input = e.target;
-          const reader = new FileReader();
-          reader.onerror = () => {
-            console.error("FileReader error:", reader.error);
-            alert("Could not read the file: " + (reader.error && reader.error.message || "unknown error"));
-            input.value = "";
-          };
-          reader.onload = async (ev) => {
-            const arrayBuffer = ev.target.result;
-            try {
-              const geom = await parseGlbToGeometry(arrayBuffer);
-              const s = stateRef.current;
-              s.customGeometries.push(geom);
-              const name = file.name.replace(/\.glb$/i, "");
-              const data = arrayBufferToBase64(arrayBuffer);
-              const newIndex = 5 + s.customGeometries.length - 1;
-              setCustomGlbs((prev) => [...prev, { name, data }]);
-              modeRef.current = "build";
-              setMode("build");
-              activeSlotRef.current = newIndex;
-              setActiveSlot(newIndex);
-            } catch (err) {
-              console.error("GLB import failed:", err);
-              alert("Could not import GLB file:\n\n" + (err && err.message ? err.message : err));
-            } finally {
-              input.value = "";
-            }
-          };
-          reader.readAsArrayBuffer(file);
+        const [showModelBrowser, setShowModelBrowser] = useState(false);
+        const [repoFiles, setRepoFiles] = useState([]);
+        const [repoStatus, setRepoStatus] = useState("idle");
+        const [importingModel, setImportingModel] = useState(null);
+
+        async function openModelBrowser() {
+          setShowModelBrowser(true);
+          if (repoFiles.length > 0 || repoStatus === "loading") return;
+          setRepoStatus("loading");
+          try {
+            const res = await fetch(MODELS_REPO_API);
+            if (!res.ok) throw new Error("Repo fetch failed");
+            const data = await res.json();
+            const glbs = (Array.isArray(data) ? data : [])
+              .filter((f) => f.type === "file" && /\.glb$/i.test(f.name));
+            setRepoFiles(glbs);
+            setRepoStatus("ok");
+          } catch {
+            setRepoStatus("error");
+          }
+        }
+
+        async function handlePickModel(file) {
+          if (importingModel) return;
+          setImportingModel(file.name);
+          const geom = await fetchAndParseGlb(file.download_url);
+          setImportingModel(null);
+          if (!geom) { alert(`Failed to load ${file.name}.`); return; }
+          const s = stateRef.current;
+          s.customGeometries.push(geom);
+          const name = file.name.replace(/\.glb$/i, "");
+          const newIndex = 5 + s.customGeometries.length - 1;
+          setCustomObjs((prev) => [...prev, { name, url: file.download_url }]);
+          modeRef.current = "build";
+          setMode("build");
+          activeSlotRef.current = newIndex;
+          setActiveSlot(newIndex);
+          setShowModelBrowser(false);
         }
 
         function handleSetTexture(i) { activeSlotRef.current = i; setActiveSlot(i); }
@@ -1170,11 +1137,11 @@
               texIndex: b.userData.texIndex ?? 0,
               shape: b.userData.shape || "block",
               sensorKind: b.userData.sensorKind,
-              glbIndex: b.userData.glbIndex,
+              objIndex: b.userData.objIndex,
               scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
               script: b.userData.script ?? { ...DEFAULT_SCRIPT },
             })),
-            customGlbs: customGlbs,
+            customGeoms: s.customGeometries,
           });
         }
         function exitTest() { setTestBlocks(null); }
@@ -1182,13 +1149,13 @@
         function saveWorld() {
           const s = stateRef.current;
           const data = {
-            customGlbs,
+            customObjs,
             blocks: s.blocks.map((b) => ({
               pos: { x: b.position.x, y: b.position.y, z: b.position.z },
               texIndex: b.userData.texIndex ?? 0,
               shape: b.userData.shape || "block",
               sensorKind: b.userData.sensorKind,
-              glbIndex: b.userData.glbIndex,
+              objIndex: b.userData.objIndex,
               scale: { x: b.scale.x, y: b.scale.y, z: b.scale.z },
               script: b.userData.script ?? { ...DEFAULT_SCRIPT },
             })),
@@ -1209,7 +1176,7 @@
             const parsed = JSON.parse(ev.target.result);
             const isLegacy = Array.isArray(parsed);
             const blocksData = isLegacy ? parsed : parsed.blocks || [];
-            const glbsData = isLegacy ? [] : parsed.customGlbs || [];
+            const objsData = isLegacy ? [] : parsed.customObjs || [];
 
             s.blocks.forEach((b) => {
               s.scene.remove(b);
@@ -1217,24 +1184,27 @@
             });
             s.blocks = [];
 
-            const settled = await Promise.allSettled(
-              glbsData.map((o) => parseGlbToGeometry(base64ToArrayBuffer(o.data))),
+            const fetched = await Promise.all(
+              objsData.map((o) => (o.url ? fetchAndParseGlb(o.url) : null)),
             );
-            const parsedGeoms = settled.map((r, i) => {
-              if (r.status === "fulfilled") return r.value;
-              console.warn("Skipping GLB '" + (glbsData[i].name || i) + "': " + (r.reason && r.reason.message));
-              return null;
+            s.customGeometries = [];
+            const validObjs = [];
+            objsData.forEach((o, i) => {
+              if (fetched[i]) {
+                s.customGeometries.push(fetched[i]);
+                validObjs.push({ name: o.name, url: o.url });
+              }
             });
-            s.customGeometries = parsedGeoms.filter(Boolean);
-            const validGlbs = glbsData.filter((o, i) => parsedGeoms[i]);
-            setCustomGlbs(validGlbs);
+            setCustomObjs(validObjs);
 
             blocksData.forEach((item) => {
               const shape = item.shape || "block";
               const pos = new THREE.Vector3(item.pos.x, item.pos.y, item.pos.z);
               let block;
-              if (shape === "glb") {
-                block = createBlock(pos, 0, "glb", undefined, item.glbIndex ?? 0);
+              if (shape === "obj" || shape === "model") {
+                if (s.customGeometries[item.objIndex ?? 0]) {
+                  block = createBlock(pos, 0, "obj", undefined, item.objIndex ?? 0);
+                }
               } else if (shape === "sphere") {
                 block = createBlock(pos, 0, "sphere", item.sensorKind || "kill");
               } else {
@@ -1367,13 +1337,11 @@
                   Load World
                   <input type="file" accept=".json" style={{ display: "none" }} onChange={loadWorld} />
                 </label>
-                <label style={{
-                  ...retroToolbarBtn("#fcd34d","#eab308","#854d0e","#fde68a"),
-                  userSelect: "none", display: "inline-block",
-                }} title="Import a .glb model as a placeable block">
-                  Import GLB
-                  <input type="file" accept=".glb" style={{ display: "none" }} onChange={handleImportGlb} />
-                </label>
+                <button onClick={openModelBrowser}
+                  style={retroToolbarBtn("#fcd34d","#eab308","#854d0e","#fde68a")}
+                  title="Pick a model from the Maideo-Studio/Models repository">
+                  Import Model
+                </button>
               </div>
 
               <div style={{
@@ -1387,14 +1355,14 @@
                           {i + 1}
                         </div>
                       )),
-                      ...customGlbs.map((glb, i) => {
+                      ...customObjs.map((obj, i) => {
                         const slotIdx = 5 + i;
                         const active = activeSlot === slotIdx;
                         return (
                           <div
-                            key={`glb-${i}`}
+                            key={`obj-${i}`}
                             onClick={() => handleSetTexture(slotIdx)}
-                            title={glb.name}
+                            title={obj.name}
                             style={{
                               width: 56, height: 56,
                               border: "3px solid",
@@ -1416,7 +1384,7 @@
                               wordBreak: "break-all", lineHeight: 1.1,
                             }}
                           >
-                            {glb.name.slice(0, 10)}
+                            {obj.name.slice(0, 10)}
                           </div>
                         );
                       }),
@@ -1634,6 +1602,94 @@
             {testBlocks !== null && (
               <div style={{ position: "absolute", inset: 0, zIndex: 100 }}>
                 <TestMode data={testBlocks} onExit={exitTest} />
+              </div>
+            )}
+
+            {showModelBrowser && (
+              <div
+                onClick={() => !importingModel && setShowModelBrowser(false)}
+                style={{
+                  position: "absolute", inset: 0, zIndex: 200,
+                  background: "rgba(0,0,0,0.55)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                <div onClick={(e) => e.stopPropagation()} style={{
+                  width: 460, maxHeight: "78vh", display: "flex", flexDirection: "column",
+                  background: "#c0c0c0", color: "#000",
+                  border: "2px solid",
+                  borderTopColor: "#dcdcdc", borderLeftColor: "#dcdcdc",
+                  borderRightColor: "#404040", borderBottomColor: "#404040",
+                  fontFamily: RETRO_FONT, fontSize: 12,
+                  boxShadow: "4px 4px 0 rgba(0,0,0,0.5)",
+                }}>
+                  <div style={{
+                    background: "linear-gradient(180deg,#854d0e 0%,#a16207 50%,#854d0e 100%)",
+                    color: "#fff", padding: "6px 10px",
+                    fontWeight: "bold", fontSize: 12, letterSpacing: 1,
+                    textTransform: "uppercase",
+                    textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+                    borderBottom: "1px solid #000",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                  }}>
+                    <span>■ Import Model — {MODELS_REPO}</span>
+                    <button
+                      onClick={() => !importingModel && setShowModelBrowser(false)}
+                      disabled={!!importingModel}
+                      style={{
+                        ...retroFlatBtn, padding: "2px 8px", minWidth: 24,
+                        opacity: importingModel ? 0.5 : 1,
+                      }}
+                    >×</button>
+                  </div>
+                  <div style={{ padding: 10, overflowY: "auto", flex: 1 }}>
+                    {repoStatus === "loading" && (
+                      <div style={{ textAlign: "center", padding: 20 }}>Loading model list…</div>
+                    )}
+                    {repoStatus === "error" && (
+                      <div style={{ textAlign: "center", padding: 20, color: "#7f1d1d" }}>
+                        Could not reach the repository.
+                        <div style={{ marginTop: 10 }}>
+                          <button onClick={openModelBrowser} style={{ ...retroFlatBtn, padding: "4px 10px" }}>
+                            Retry
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {repoStatus === "ok" && repoFiles.length === 0 && (
+                      <div style={{ textAlign: "center", padding: 20 }}>
+                        No .glb models found in this repository.
+                      </div>
+                    )}
+                    {repoStatus === "ok" && repoFiles.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                        {repoFiles.map((f) => {
+                          const busy = importingModel === f.name;
+                          const disabled = !!importingModel && !busy;
+                          return (
+                            <button
+                              key={f.name}
+                              onClick={() => handlePickModel(f)}
+                              disabled={disabled}
+                              style={{
+                                ...retroFlatBtn,
+                                padding: "10px 8px", textAlign: "center",
+                                opacity: disabled ? 0.5 : 1,
+                                cursor: disabled ? "not-allowed" : "pointer",
+                                whiteSpace: "normal", wordBreak: "break-word",
+                              }}
+                            >
+                              {busy ? "Loading…" : f.name}
+                              <div style={{ fontSize: 9, fontWeight: "normal", opacity: 0.7, marginTop: 2 }}>
+                                {(f.size / 1024).toFixed(1)} KB
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
