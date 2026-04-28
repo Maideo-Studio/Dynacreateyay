@@ -321,6 +321,64 @@
           );
         }
 
+        const _triV0 = new THREE.Vector3();
+        const _triV1 = new THREE.Vector3();
+        const _triV2 = new THREE.Vector3();
+        const _tri = new THREE.Triangle();
+        function forEachWorldTriangle(mesh, cb) {
+          const geom = mesh.geometry;
+          const pos = geom.attributes.position;
+          if (!pos) return;
+          const idx = geom.index;
+          const m = mesh.matrixWorld;
+          const triCount = idx ? idx.count / 3 : pos.count / 3;
+          for (let i = 0; i < triCount; i++) {
+            const a = idx ? idx.getX(i * 3)     : i * 3;
+            const b = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
+            const c = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
+            _triV0.fromBufferAttribute(pos, a).applyMatrix4(m);
+            _triV1.fromBufferAttribute(pos, b).applyMatrix4(m);
+            _triV2.fromBufferAttribute(pos, c).applyMatrix4(m);
+            _tri.set(_triV0, _triV1, _triV2);
+            if (cb(_tri) === false) return;
+          }
+        }
+        function isMeshObstacle(o) { return o.userData.shape === "obj"; }
+        function meshIntersectsBox(mesh, box) {
+          let hit = false;
+          forEachWorldTriangle(mesh, (tri) => {
+            if (box.intersectsTriangle(tri)) { hit = true; return false; }
+          });
+          return hit;
+        }
+        function obstacleHitsPlayer(i) {
+          const aabb = obstacleBoxes[i];
+          if (!playerBox.intersectsBox(aabb)) return false;
+          const obs = obstacles[i];
+          if (!isMeshObstacle(obs)) return true;
+          return meshIntersectsBox(obs, playerBox);
+        }
+        function meshTopUnderBox(mesh, box) {
+          let maxY = -Infinity;
+          forEachWorldTriangle(mesh, (tri) => {
+            if (box.intersectsTriangle(tri)) {
+              const y = Math.max(tri.a.y, tri.b.y, tri.c.y);
+              if (y > maxY) maxY = y;
+            }
+          });
+          return maxY === -Infinity ? null : maxY;
+        }
+        function meshBottomAboveBox(mesh, box) {
+          let minY = Infinity;
+          forEachWorldTriangle(mesh, (tri) => {
+            if (box.intersectsTriangle(tri)) {
+              const y = Math.min(tri.a.y, tri.b.y, tri.c.y);
+              if (y < minY) minY = y;
+            }
+          });
+          return minY === Infinity ? null : minY;
+        }
+
         const jumpSound = new Audio(
           "https://raw.githubusercontent.com/Maideo-Studio/Dynaversesounds/main/roblox-classic-jump.mp3",
         );
@@ -372,7 +430,7 @@
 
           updatePlayerHitbox();
           obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
-          if (obstacleBoxes.some((b) => playerBox.intersectsBox(b))) {
+          if (obstacles.some((_, i) => obstacleHitsPlayer(i))) {
             player.position.copy(oldPos);
           }
 
@@ -390,16 +448,27 @@
           obstacles.forEach((obs, i) => obstacleBoxes[i].setFromObject(obs));
           let landedOn = null;
           for (let i = 0; i < obstacles.length; i++) {
+            if (!obstacleHitsPlayer(i)) continue;
+            const obs = obstacles[i];
             const box = obstacleBoxes[i];
-            if (!playerBox.intersectsBox(box)) continue;
             if (velocity_y <= 0) {
-              player.position.y = box.max.y + 1.6 + 0.01;
-              isJumping = false;
-              velocity_y = 0;
-              landedOn = obstacles[i];
+              const topY = isMeshObstacle(obs)
+                ? meshTopUnderBox(obs, playerBox)
+                : box.max.y;
+              if (topY !== null) {
+                player.position.y = topY + 1.6 + 0.01;
+                isJumping = false;
+                velocity_y = 0;
+                landedOn = obs;
+              }
             } else {
-              player.position.y = box.min.y - 0.5 - 0.01;
-              velocity_y = 0;
+              const bottomY = isMeshObstacle(obs)
+                ? meshBottomAboveBox(obs, playerBox)
+                : box.min.y;
+              if (bottomY !== null) {
+                player.position.y = bottomY - 0.5 - 0.01;
+                velocity_y = 0;
+              }
             }
           }
           if (landedOn) {
